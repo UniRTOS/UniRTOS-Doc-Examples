@@ -1,10 +1,18 @@
 // DNS_DEMO_TASK_STACK_SIZE 4096
-
+#include "qosa_asyn_dns.h"
+#include "qosa_log.h"
+#include "qosa_def.h"
+#include "qosa_sys.h"
+#include "qcm_socket_adp.h"
+#include "qosa_asyn_dns.h"
+#include "qosa_datacall.h"
+#include "qosa_sockets.h"
+#define QOS_LOG_TAG                   LOG_TAG
 // DNS 需要配置的参数
 #define QUEC_DNS_DEMO_SIMID           0
 #define QUEC_DNS_DEMO_PDPID           1
 #define QUEC_DNS_DEMO_HOSTNAME        "www.baidu.com"
-
+#define QUEC_DNS_DEMO_TASK_STACK_SIZE 4096
 /**
  * @brief dns回调响应数据结构体
  *
@@ -13,9 +21,9 @@
  */
 typedef struct
 {
-    qosa_dns_error_e    evt_code;   /**< dns事件错误码 */
-    struct qosa_addrinfo_s *info;   /**< dns响应数据指针 */
-    void               *user_param; /**< 用户自定义参数指针 */
+    qosa_dns_error_e        evt_code;   /**< dns事件错误码 */
+    struct qosa_addrinfo_s *info;       /**< dns响应数据指针 */
+    void                   *user_param; /**< 用户自定义参数指针 */
 } dns_demo_resp_t;
 
 static qosa_task_t g_dns_demo_task = QOSA_NULL;
@@ -57,7 +65,7 @@ static qosa_bool_t quec_dns_result_handler(dns_demo_resp_t *dns_ptr)
     qosa_bool_t  finish = QOSA_FALSE;           // 是否完成标志，默认为未完成
 
     // 打印事件码，便于调试追踪
-    quec_dns_log("evt_code=%x", evt_code);
+    QLOGD("evt_code=%x", evt_code);
 
     // 处理DNS解析结果
     if (evt_code == QOSA_DNS_RESULT_OK)
@@ -68,7 +76,7 @@ static qosa_bool_t quec_dns_result_handler(dns_demo_resp_t *dns_ptr)
             while (info != QOSA_NULL)
             {
                 // 打印IP地址和家族类型
-                quec_dns_log("IP: %s, Family: %d", info->ip_addr, info->ai_family);
+                QLOGD("IP: %s, Family: %d", info->ip_addr, info->ai_family);
                 info = info->ai_next;
             }
             // 释放内存
@@ -77,11 +85,10 @@ static qosa_bool_t quec_dns_result_handler(dns_demo_resp_t *dns_ptr)
     }
     else
     {
-        quec_dns_log("DNS failed: %x", evt_code);
+        QLOGD("DNS failed: %x", evt_code);
     }
     // 标记处理完成
     finish = QOSA_TRUE;
-
 
     // 返回处理完成标志
     return finish;
@@ -111,7 +118,7 @@ static void quec_dns_demo_process(void *ctx)
     ret = qosa_dns_asyn_getaddrinfo(QUEC_DNS_DEMO_SIMID, QUEC_DNS_DEMO_PDPID, QUEC_DNS_DEMO_HOSTNAME, &hints, quec_dns_result_cb, QOSA_NULL);
     if (ret != QOSA_DNS_RESULT_OK)
     {
-        quec_dns_log("dns start err =%x", ret);
+        QLOGD("dns start err =%x", ret);
         qosa_msgq_delete(g_dns_demo_msg);
         return;
     }
@@ -129,12 +136,12 @@ static void quec_dns_demo_process(void *ctx)
         }
     }
     qosa_msgq_delete(g_dns_demo_msg);
-    quec_dns_log("DNS END");
+    QLOGD("DNS END");
 }
 
 void quec_demo_dns_init(void)
 {
-    quec_dns_log("enter Quectel DNS DEMO !!!");
+    QLOGD("enter Quectel DNS DEMO !!!");
     if (g_dns_demo_msg == QOSA_NULL)
     {
         qosa_msgq_create(&g_dns_demo_msg, sizeof(dns_demo_resp_t), 10);
