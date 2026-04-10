@@ -1,757 +1,740 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
-#include <pthread.h>
-#include <time.h>
-#include <arpa/inet.h>
+/*****************************************************************/ /**
+* @file qcm_socket_server_nonblock_demo.c
+* @brief Non-blocking mode TCP server demo using qcm_socket_adp.h API
+* @author larson.li@quectel.com
+* @date 2026-04-09
+*
+* @copyright Copyright (c) 2023 Quectel Wireless Solution, Co., Ltd.
+* All Rights Reserved. Quectel Wireless Solution Proprietary and Confidential.
+*
+* @par EDIT HISTORY FOR MODULE
+* <table>
+* <tr><th>Date <th>Version <th>Author <th>Description
+* <tr><td>2026-04-09 <td>1.0 <td>larson.li <td> Init - Non-blocking TCP Server Demo
+* </table>
+**********************************************************************/
+
+#include "qosa_def.h"
+#include "qosa_sys.h"
+#include "qosa_log.h"
 #include "qcm_socket_adp.h"
+#include "qosa_datacall.h"
 
-#define SERVER_PORT 8080       // 服务器监听端口
-#define MAX_CLIENTS 10         // 最大客户端连接数
-#define BUFFER_SIZE 1024       // 缓冲区大小
-#define SERVER_NAME "TCP Server v1.0"
+#define QOS_LOG_TAG                       LOG_TAG
 
-// 客户端连接信息结构体
-typedef struct {
-    int fd;                     // Socket文件描述符
-    qosa_ip_addr_t ip_addr;     // 客户端IP地址
-    int port;                   // 客户端端口
-    pthread_t thread_id;        // 线程ID
-    time_t connect_time;        // 连接时间
-    int active;                 // 活跃状态
-    char client_name[32];       // 客户端名称
-} client_info_t;
+/* ==================== Server Configuration ==================== */
+#define SOCKET_SERVER_DEMO_TASK_STACK_SIZE       (20 * 1024)
+#define SOCKET_SERVER_DEMO_TASK_PRIO             QOSA_PRIORITY_NORMAL
 
-// 服务器全局状态
-typedef struct {
-    int server_fd;              // 服务器Socket文件描述符
-    volatile int running;       // 服务器运行状态
-    int client_count;           // 当前客户端数量
-    client_info_t clients[MAX_CLIENTS]; // 客户端数组
-    pthread_t accept_thread;    // 接受连接线程
-    pthread_t monitor_thread;   // 监控线程
-    pthread_mutex_t lock;       // 互斥锁
-} server_state_t;
+#define SOCKET_SERVER_LISTEN_PORT                12345      // Server listening port
+#define SOCKET_SERVER_BACKLOG                    5         // Max pending connections
+#define SOCKET_SERVER_MAX_CLIENTS                10        // Max concurrent clients
+#define SOCKET_SERVER_BUFF_MAX_LEN               1024      // Buffer size
 
-// 全局服务器状态
-static server_state_t g_server = {0};
+#define SOCKET_SERVER_SIMID                      0         // SIM card ID
+#define SOCKET_SERVER_PDPID                      1         // PDP context ID
+#define SOCKET_SERVER_ACTIVE_TIMEOUT             30        // PDP activation timeout (seconds)
 
 /**
- * @brief 初始化服务器状态
+ * @brief Socket application message type enumeration definition
+ *
+ * This enumeration defines non-blocking message types used in socket applications,
+ * used to identify different socket events and operation indications.
  */
-int init_server_state(void)
+typedef enum
 {
-    memset(&g_server, 0, sizeof(g_server));
-    
-    // 初始化互斥锁
-    if (pthread_mutex_init(&g_server.lock, NULL) != 0) {
-        printf("初始化互斥锁失败\n");
-        return -1;
+    SOCKET_APP_NOBLOCK_MSG_EVENT_IND = 1, /*!< Socket event notification */
+    SOCKET_APP_CLIENT_MSG_EVENT_IND = 2, /*!< Client event notification */
+} socket_app_msg_type_e;
+
+/* ==================== Data Structure ==================== */
+
+/**
+ * @brief Socket application message information structure
+ */
+typedef struct
+{
+    socket_app_msg_type_e event_type; /*!< Message event type */
+    void                 *argv;       /*!< Message parameter pointer, points to specific parameter data */
+} socket_app_msg_info_t;
+
+/**
+ * @brief Client connection management structure
+ */
+typedef struct {
+    int          socket_fd;                  // Client socket handle
+    qosa_ip_addr_t remote_ip;                // Client IP address
+    int          remote_port;                // Client port
+    qosa_ip_addr_t local_ip;                 // Server local IP
+    int          local_port;                 // Server local port
+    qosa_bool_t  active;                     // Connection active flag
+    qosa_uint32_t recv_count;                // Data received count
+    qosa_uint32_t send_count;                // Data sent count
+    char        *send_buffer;                // Pending send buffer
+    int          send_buffer_len;            // Pending send buffer length
+    int          send_offset;                // Current send offset
+} socket_client_info_t;
+
+/**
+ * @brief Server context structure
+ */
+typedef struct {
+    int                listen_socket;        // Server listening socket
+    socket_client_info_t clients[SOCKET_SERVER_MAX_CLIENTS];  // Client array
+    int                client_count;         // Current client count
+    qosa_bool_t        server_running;       // Server running flag
+} socket_server_context_t;
+
+/**
+ * @brief Socket application event indication structure
+ *
+ * This structure is used to encapsulate socket-related event information, including socket file descriptor,
+ * event mask, result code, and user-defined parameters
+ */
+typedef struct
+{
+    int   sockfd;      /*!< socket handle */
+    int   event_mask;  /*!< Event mask, identifies the type of event that occurred */
+    int   result_code; /*!< Operation result code, indicates the execution result of the operation */
+    void *argv;        /*!< User-defined parameter pointer, used to pass additional data */
+} socket_app_event_ind_t;
+
+/* ==================== Global Variables ==================== */
+static socket_server_context_t g_server_ctx = {
+    .listen_socket = -1,
+    .client_count = 0,
+    .server_running = QOSA_FALSE
+};
+
+static qosa_msgq_t g_socket_msgq;
+
+/* ==================== Helper Functions ==================== */
+static void qcm_socket_server_on_client_event(int sock_hndl, int event, int code, void *user_argv);
+
+/**
+ * @brief Check and activate PDP data connection
+ *
+ * @return 0 on success, -1 on failure
+ */
+static int qcm_socket_server_datacall_active(void)
+{
+    qosa_datacall_conn_t    conn = 0;
+    qosa_datacall_ip_info_t info = {0};
+    qosa_datacall_errno_e   ret = 0;
+    qosa_pdp_context_t      pdp_ctx = {0};
+    char                    ip4addr_buf[CONFIG_QOSA_INET_ADDRSTRLEN] = {0};
+    char                    ip6addr_buf[CONFIG_QOSA_INET6_ADDRSTRLEN] = {0};
+
+    // Configure PDP context: APN, IP type
+    // If the operator has restrictions on the APN during registration, needs to be set the APN provided by the operator
+    const char *apn_str = "CTNET";
+    pdp_ctx.apn_valid = QOSA_TRUE;
+    pdp_ctx.pdp_type = QOSA_PDP_TYPE_IPV6;  //ipv6
+    if (pdp_ctx.apn_valid)
+    {
+        qosa_memcpy(pdp_ctx.apn, apn_str, qosa_strlen(apn_str));
     }
-    
-    g_server.running = 1;
-    g_server.client_count = 0;
-    
-    // 初始化客户端数组
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        g_server.clients[i].fd = -1;
-        g_server.clients[i].active = 0;
-        memset(g_server.clients[i].client_name, 0, sizeof(g_server.clients[i].client_name));
+
+    ret = qosa_datacall_set_pdp_context(SOCKET_SERVER_SIMID, SOCKET_SERVER_PDPID, &pdp_ctx);
+    QLOGI("set pdp context, ret=%d", ret);
+
+    conn = qosa_datacall_conn_new(SOCKET_SERVER_SIMID, SOCKET_SERVER_PDPID, QOSA_DATACALL_CONN_TCPIP);
+
+    qosa_memset(ip4addr_buf, 0, sizeof(ip4addr_buf));
+    qosa_memset(ip6addr_buf, 0, sizeof(ip6addr_buf));
+
+    if (QOSA_DATACALL_ERR_NO_ACTIVE == qosa_datacall_get_ip_info(conn, &info))
+    {
+        QLOGD("PDP not active, activating... sim_id=%d, pdp_id=%d", SOCKET_SERVER_SIMID, SOCKET_SERVER_PDPID);
+
+        ret = qosa_datacall_start(conn, SOCKET_SERVER_ACTIVE_TIMEOUT);
+        if (QOSA_DATACALL_OK != ret)
+        {
+            QLOGE("PDP activation failed: ret=%x", ret);
+            return -1;
+        }
+        QLOGD("PDP activated successfully");
+            // Get IP info from datacall
+        ret = qosa_datacall_get_ip_info(conn, &info);
+        QLOGI("pdpid=%d,simid=%d", info.simcid.pdpid, info.simcid.simid);
+        QLOGI("ip_type=%d", info.ip_type);
+
+        if (info.ip_type == QOSA_PDP_IPV4)
+        {
+            // IPv4 info            
+            qosa_ip_addr_inet_ntop(QOSA_IP_ADDR_AF_INET, &info.ipv4_ip.addr.ipv4_addr, ip4addr_buf, sizeof(ip4addr_buf));
+            QLOGI("ipv4 addr:%s", ip4addr_buf);
+        }
+        else if (info.ip_type == QOSA_PDP_IPV6)
+        {
+            // IPv6 info
+            qosa_ip_addr_inet_ntop(QOSA_IP_ADDR_AF_INET6, &info.ipv6_ip.addr.ipv6_addr, ip6addr_buf, sizeof(ip6addr_buf));
+            QLOGI("ipv6 addr:%s", ip6addr_buf);
+        }
+        else
+        {
+            // IPv4 and IPv6 info
+            qosa_memset(ip4addr_buf, 0, sizeof(ip4addr_buf));
+            qosa_ip_addr_inet_ntop(QOSA_IP_ADDR_AF_INET, &info.ipv4_ip.addr.ipv4_addr, ip4addr_buf, sizeof(ip4addr_buf));
+            QLOGI("ipv4 addr:%s", ip4addr_buf);
+            qosa_memset(ip6addr_buf, 0, sizeof(ip6addr_buf));
+            qosa_ip_addr_inet_ntop(QOSA_IP_ADDR_AF_INET6, &info.ipv6_ip.addr.ipv6_addr, ip6addr_buf, sizeof(ip6addr_buf));
+            QLOGI("ipv6 addr:%s", ip6addr_buf);
+        }
+    }
+    else
+    {
+        QLOGD("PDP already active, IP type: %d", info.ip_type);
     }
     
     return 0;
 }
 
 /**
- * @brief 创建服务器Socket
+ * @brief Find an available client slot
+ *
+ * @return Index of available slot, or -1 if full
  */
-int create_server_socket(int port)
+static int qcm_socket_server_find_available_slot(void)
 {
-    int server_fd;
-    
-    printf("创建服务器Socket...\n");
-    
-    // 创建TCP Socket
-    server_fd = qcm_socket_create(
-        0,                      // SIM卡ID
-        0,                      // PDP上下文ID
-        QCM_AF_INET,            // IPv4地址族
-        QCM_SOCK_STREAM,        // TCP流式Socket
-        QCM_TCP_PROTOCOL,       // TCP协议
-        port,                   // 监听端口
-        QOSA_TRUE               // 阻塞模式（监听Socket建议使用阻塞模式）
-    );
-    
-    if (server_fd < 0) {
-        printf("创建服务器Socket失败，错误码: %d\n", server_fd);
-        return -1;
-    }
-    
-    printf("服务器Socket创建成功，句柄: %d\n", server_fd);
-    
-    // 设置Socket选项：地址重用
-    int reuse_addr = 1;
-    int ret = qcm_socket_set_opt(server_fd, QCM_SOCK_REUSEADDR_OPT, &reuse_addr);
-    if (ret < 0) {
-        printf("设置地址重用失败，错误码: %d\n", ret);
-    }
-    
-    // 设置系统选项：TCP保持连接
-    int keepalive = 1;
-    ret = qcm_socket_set_system_opt(QCM_TCP_KEEPALIVE_OPT, &keepalive);
-    if (ret < 0) {
-        printf("设置TCP保持连接失败，错误码: %d\n", ret);
-    }
-    
-    // 设置系统选项：TCP窗口大小
-    int recv_window = 64;  // 64KB
-    ret = qcm_socket_set_system_opt(QCM_TCP_RECV_WINDOWS_OPT, &recv_window);
-    if (ret < 0) {
-        printf("设置接收窗口大小失败，错误码: %d\n", ret);
-    }
-    
-    return server_fd;
-}
-
-/**
- * @brief 添加客户端到服务器
- */
-int add_client(int client_fd, qosa_ip_addr_t *ip_addr, int port)
-{
-    pthread_mutex_lock(&g_server.lock);
-    
-    int index = -1;
-    
-    // 查找空闲的客户端槽位
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (g_server.clients[i].active == 0) {
-            index = i;
-            break;
+    int i;
+    for (i = 0; i < SOCKET_SERVER_MAX_CLIENTS; i++)
+    {
+        if (g_server_ctx.clients[i].active == QOSA_FALSE)
+        {
+            return i;
         }
     }
-    
-    if (index == -1) {
-        printf("已达到最大客户端连接数，无法接受新连接\n");
-        pthread_mutex_unlock(&g_server.lock);
-        return -1;
-    }
-    
-    // 填充客户端信息
-    g_server.clients[index].fd = client_fd;
-    memcpy(&g_server.clients[index].ip_addr, ip_addr, sizeof(qosa_ip_addr_t));
-    g_server.clients[index].port = port;
-    g_server.clients[index].active = 1;
-    g_server.clients[index].connect_time = time(NULL);
-    
-    // 生成客户端名称
-    struct in_addr in_addr;
-    in_addr.s_addr = ip_addr->addr;
-    snprintf(g_server.clients[index].client_name, 
-             sizeof(g_server.clients[index].client_name),
-             "Client-%d-%s", index, inet_ntoa(in_addr));
-    
-    g_server.client_count++;
-    
-    pthread_mutex_unlock(&g_server.lock);
-    
-    printf("新客户端已添加: %s (索引: %d)\n", 
-           g_server.clients[index].client_name, index);
-    
-    return index;
+    QLOGE("Client slots full, max %d clients", SOCKET_SERVER_MAX_CLIENTS);
+    return -1;
 }
 
 /**
- * @brief 从服务器移除客户端
+ * @brief Send socket application event report to message queue
+ *
+ * @param cmd Event type command code
+ * @param argv Event-related parameter pointer
+ *
+ * This function encapsulates the specified event type and parameters into a message structure,
+ * then sends it out through the message queue.
  */
-void remove_client(int index)
+static void socket_app_event_report(socket_app_msg_type_e cmd, void *argv)
 {
-    if (index < 0 || index >= MAX_CLIENTS) {
+    /* Define message information structure and return value variable */
+    socket_app_msg_info_t msg_info;
+    int                   ret = 0;
+
+    /* Initialize message structure and fill event information */
+    qosa_memset(&msg_info, 0, sizeof(socket_app_msg_info_t));
+    msg_info.event_type = cmd;
+    msg_info.argv = argv;
+
+    /* Send message to global socket message queue */
+    ret = qosa_msgq_release(g_socket_msgq, sizeof(socket_app_msg_info_t), (qosa_uint8_t *)&msg_info, QOSA_NO_WAIT);
+    if (ret != QOSA_OK)
+    {
+        /* Print error information when sending fails */
+        QLOGE("qosa_msgq_send error");
+    }
+}
+
+/**
+ * @brief Socket underlying event callback function, used to handle socket events and report
+ *
+ * @param sockfd socket handle
+ * @param event_mask Event mask, identifies the type of event that occurred
+ * @param result Operation result code
+ * @param argv Additional parameter pointer
+ */
+static void socket_app_register_event_cb(int socket_hd, int event_mask, int result, void *argv)
+{
+    socket_app_event_ind_t *ind_msg = QOSA_NULL;
+
+    /* Allocate event indication message memory */
+    ind_msg = qosa_malloc(sizeof(socket_app_event_ind_t));
+    if (ind_msg == QOSA_NULL)
+    {
+        QLOGE("qosa_malloc error");
         return;
     }
-    
-    pthread_mutex_lock(&g_server.lock);
-    
-    if (g_server.clients[index].active) {
-        printf("正在移除客户端: %s\n", g_server.clients[index].client_name);
-        
-        // 关闭Socket
-        if (g_server.clients[index].fd >= 0) {
-            qcm_socket_close(g_server.clients[index].fd);
-        }
-        
-        // 重置客户端信息
-        g_server.clients[index].fd = -1;
-        g_server.clients[index].active = 0;
-        g_server.clients[index].thread_id = 0;
-        memset(g_server.clients[index].client_name, 0, 
-               sizeof(g_server.clients[index].client_name));
-        
-        g_server.client_count--;
-        
-        printf("客户端已移除，当前客户端数: %d\n", g_server.client_count);
+
+    /* Fill event indication message structure */
+    ind_msg->sockfd = socket_hd;
+    ind_msg->event_mask = event_mask;
+    ind_msg->result_code = result;
+    ind_msg->argv = argv;
+
+    /* Report socket application event */
+    if(socket_hd == g_server_ctx.listen_socket)
+    {
+        socket_app_event_report(SOCKET_APP_NOBLOCK_MSG_EVENT_IND, ind_msg);
     }
-    
-    pthread_mutex_unlock(&g_server.lock);
+    else
+    {
+        socket_app_event_report(SOCKET_APP_CLIENT_MSG_EVENT_IND, ind_msg);
+    }
 }
 
 /**
- * @brief 处理客户端请求
+ * @brief Accept new client connection callback (called when ACCEPT_EVENT fires)
  */
-void* handle_client_thread(void* arg)
+static void qcm_socket_server_on_accept(int sock_hndl, int code, void *user_argv)
 {
-    int client_index = *(int*)arg;
-    free(arg);
-    
-    if (client_index < 0 || client_index >= MAX_CLIENTS) {
-        printf("无效的客户端索引\n");
-        return NULL;
+    int client_idx = -1;
+    int new_client_socket = -1;
+    qosa_ip_addr_t remote_addr = {0};
+    qosa_ip_addr_t local_addr = {0};
+    int remote_port = 0;
+    int local_port = 0;
+    char ip_str[32] = {0};
+
+    QLOGV("Accept event on socket %d, code=%d", sock_hndl, code);
+
+    if(code != QOSA_OK)
+    {
+        QLOGE("Accept failed: code=%d", code);
+        return;
     }
-    
-    int client_fd = g_server.clients[client_index].fd;
-    char client_name[64];
-    
-    // 获取客户端名称
-    pthread_mutex_lock(&g_server.lock);
-    strncpy(client_name, g_server.clients[client_index].client_name, 
-            sizeof(client_name));
-    pthread_mutex_unlock(&g_server.lock);
-    
-    printf("开始处理客户端: %s\n", client_name);
-    
-    char buffer[BUFFER_SIZE];
-    
-    while (g_server.running) {
-        // 接收客户端消息
-        memset(buffer, 0, sizeof(buffer));
-        int ret = qcm_socket_read(client_fd, buffer, sizeof(buffer) - 1);
+    /* Find available client slot */
+    client_idx = qcm_socket_server_find_available_slot();
+    if (client_idx < 0)
+    {
+        QLOGE("No available client slot");
+        return;
+    }
+
+    /* Accept new client connection */
+    new_client_socket = qcm_socket_accept(
+        g_server_ctx.listen_socket,
+        &remote_addr,
+        &remote_port,
+        &local_addr,
+        &local_port
+    );
+
+    if (new_client_socket < 0)
+    {
+        QLOGE("Accept failed: ret=%d", new_client_socket);
+        return;
+    }
+
+    /* Register client in context */
+    g_server_ctx.clients[client_idx].socket_fd = new_client_socket;
+    g_server_ctx.clients[client_idx].remote_ip = remote_addr;
+    g_server_ctx.clients[client_idx].remote_port = remote_port;
+    g_server_ctx.clients[client_idx].local_ip = local_addr;
+    g_server_ctx.clients[client_idx].local_port = local_port;
+    g_server_ctx.clients[client_idx].active = QOSA_TRUE;
+    g_server_ctx.clients[client_idx].recv_count = 0;
+    g_server_ctx.clients[client_idx].send_count = 0;
+    g_server_ctx.clients[client_idx].send_buffer = NULL;
+    g_server_ctx.clients[client_idx].send_buffer_len = 0;
+    g_server_ctx.clients[client_idx].send_offset = 0;
+    g_server_ctx.client_count++;
+
+    /* Register event callbacks for new client */
+    qcm_socket_register_event(
+        new_client_socket,
+        QCM_SOCK_READ_EVENT | QCM_SOCK_WRITE_EVENT | QCM_SOCK_CLOSE_EVENT,
+        socket_app_register_event_cb,
+        (void *)(qosa_ptr)client_idx
+    );
+
+    /* Log client connection */
+    if (remote_addr.ip_vsn == QOSA_PDP_IPV4)
+    {
+        qcm_inet_ntop(AF_INET, &remote_addr.addr.ipv4_addr, ip_str, sizeof(ip_str));
+        QLOGD("New client accepted: [%s]:%d (socket=%d, slot=%d)", ip_str, remote_port, new_client_socket, client_idx);
+    }
+    else
+    {
+        qcm_inet_ntop(AF_INET6, &remote_addr.addr.ipv6_addr, ip_str, sizeof(ip_str));
+        QLOGD("New client accepted: [%s]:%d (socket=%d, slot=%d)", ip_str, remote_port, new_client_socket, client_idx);
+    }
+}
+
+/**
+ * @brief Client event callback (READ/WRITE/CLOSE events)
+ */
+static void qcm_socket_server_on_client_event(int sock_hndl, int event, int code, void *user_argv)
+{
+    int client_idx = (int)(qosa_ptr)user_argv;
+    socket_client_info_t *client = &g_server_ctx.clients[client_idx];
+    int ret;
+    int send_len = 0;
+    char buffer[SOCKET_SERVER_BUFF_MAX_LEN];
+
+    QLOGV("Client[%d] event=0x%x code=%d", client_idx, event, code);
+
+    if (event == QCM_SOCK_READ_EVENT)
+    {
+        /* ===== Handle Read Event ===== */
+        QLOGV("Client[%d] READ_EVENT", client_idx);
         
-        if (ret < 0) {
-            printf("从客户端 %s 接收数据失败，错误码: %d\n", client_name, ret);
-            break;
-        } else if (ret == 0) {
-            printf("客户端 %s 断开连接\n", client_name);
-            break;
-        } else {
+        qosa_memset(buffer, 0, sizeof(buffer));
+        ret = qcm_socket_read(sock_hndl, buffer, SOCKET_SERVER_BUFF_MAX_LEN - 1);
+
+        if (ret > 0)
+        {
+            /* Data received successfully */
+            client->recv_count++;
             buffer[ret] = '\0';
-            printf("收到客户端 %s 的消息(%d字节): %s\n", client_name, ret, buffer);
-            
-            // 处理特殊命令
-            if (strcmp(buffer, "quit") == 0 || strcmp(buffer, "exit") == 0) {
-                printf("客户端 %s 请求退出\n", client_name);
-                
-                // 发送确认消息
-                const char* response = "Goodbye!";
-                qcm_socket_send(client_fd, (char*)response, strlen(response));
-                break;
-            }
-            
-            if (strcmp(buffer, "shutdown") == 0) {
-                printf("客户端 %s 请求关闭服务器\n", client_name);
-                g_server.running = 0;
-                
-                // 发送确认消息
-                const char* response = "Server is shutting down...";
-                qcm_socket_send(client_fd, (char*)response, strlen(response));
-                break;
-            }
-            
-            if (strcmp(buffer, "status") == 0) {
-                // 返回服务器状态
-                char status_msg[256];
-                pthread_mutex_lock(&g_server.lock);
-                snprintf(status_msg, sizeof(status_msg),
-                        "Server: %s\nClients: %d/%d\nYour Name: %s",
-                        SERVER_NAME, g_server.client_count, 
-                        MAX_CLIENTS, client_name);
-                pthread_mutex_unlock(&g_server.lock);
-                
-                qcm_socket_send(client_fd, status_msg, strlen(status_msg));
-                continue;
-            }
-            
-            if (strcmp(buffer, "time") == 0) {
-                // 返回当前时间
-                time_t now = time(NULL);
-                char time_str[64];
-                struct tm* tm_info = localtime(&now);
-                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-                
-                qcm_socket_send(client_fd, time_str, strlen(time_str));
-                continue;
-            }
-            
-            if (strcmp(buffer, "help") == 0) {
-                // 返回帮助信息
-                const char* help_msg = 
-                    "Available commands:\n"
-                    "  help     - Show this help message\n"
-                    "  status   - Show server status\n"
-                    "  time     - Show current time\n"
-                    "  quit     - Disconnect from server\n"
-                    "  shutdown - Shutdown the server\n"
-                    "  echo <text> - Echo back the text\n";
-                
-                qcm_socket_send(client_fd, help_msg, strlen(help_msg));
-                continue;
-            }
-            
-            // 处理echo命令
-            if (strncmp(buffer, "echo ", 5) == 0) {
-                qcm_socket_send(client_fd, buffer + 5, strlen(buffer + 5));
-                continue;
-            }
-            
-            // 默认回复
-            char response[BUFFER_SIZE];
-            snprintf(response, sizeof(response), 
-                    "Server received: %s", buffer);
-            
-            ret = qcm_socket_send(client_fd, response, strlen(response));
-            if (ret < 0) {
-                printf("向客户端 %s 发送响应失败，错误码: %d\n", client_name, ret);
-                break;
-            }
-        }
-    }
-    
-    // 从服务器移除客户端
-    remove_client(client_index);
-    
-    printf("客户端处理线程结束: %s\n", client_name);
-    return NULL;
-}
+            QLOGD("Received from client[%d]: %d bytes, data=%s", client_idx, ret, buffer);
 
-/**
- * @brief 接受客户端连接线程
- */
-void* accept_clients_thread(void* arg)
-{
-    (void)arg;
-    
-    printf("开始接受客户端连接...\n");
-    
-    while (g_server.running) {
-        qosa_ip_addr_t client_ip;
-        int client_port;
-        qosa_ip_addr_t local_ip;
-        int local_port;
-        
-        printf("等待客户端连接...\n");
-        
-        // 接受客户端连接
-        int client_fd = qcm_socket_accept(g_server.server_fd, 
-                                          &client_ip, &client_port,
-                                          &local_ip, &local_port);
-        
-        if (!g_server.running) {
-            break;
-        }
-        
-        if (client_fd < 0) {
-            printf("接受客户端连接失败，错误码: %d\n", client_fd);
-            continue;
-        }
-        
-        // 显示客户端连接信息
-        struct in_addr in_addr;
-        in_addr.s_addr = client_ip.addr;
-        printf("\n新客户端连接:\n");
-        printf("  客户端地址: %s:%d\n", inet_ntoa(in_addr), client_port);
-        printf("  客户端Socket: %d\n", client_fd);
-        
-        // 设置客户端Socket选项
-        int timeout = 5000;  // 5秒超时
-        qcm_socket_set_opt(client_fd, QCM_SOCK_OPT_RCVTIMEO, &timeout);
-        
-        // 添加到客户端列表
-        int client_index = add_client(client_fd, &client_ip, client_port);
-        if (client_index < 0) {
-            printf("无法添加客户端到列表，关闭连接\n");
-            qcm_socket_close(client_fd);
-            continue;
-        }
-        
-        // 创建客户端处理线程
-        int* thread_arg = malloc(sizeof(int));
-        if (!thread_arg) {
-            printf("内存分配失败\n");
-            remove_client(client_index);
-            continue;
-        }
-        
-        *thread_arg = client_index;
-        
-        int ret = pthread_create(&g_server.clients[client_index].thread_id, 
-                                NULL, handle_client_thread, thread_arg);
-        if (ret != 0) {
-            printf("创建客户端处理线程失败，错误码: %d\n", ret);
-            free(thread_arg);
-            remove_client(client_index);
-            continue;
-        }
-        
-        // 发送欢迎消息
-        const char* welcome_msg = "Welcome to TCP Server!\nType 'help' for available commands.";
-        qcm_socket_send(client_fd, (char*)welcome_msg, strlen(welcome_msg));
-        
-        printf("客户端已接受，当前连接数: %d/%d\n", 
-               g_server.client_count, MAX_CLIENTS);
-    }
-    
-    printf("停止接受客户端连接\n");
-    return NULL;
-}
+            /* Prepare response with echo */
+            if (client->send_buffer != NULL)
+            {
+                qosa_free(client->send_buffer);
+            }
+            client->send_buffer_len = qosa_snprintf(
+                NULL, 0,
+                "[Server Echo] Your message: %s",
+                buffer
+            ) + 1;
 
-/**
- * @brief 服务器监控线程
- */
-void* monitor_server_thread(void* arg)
-{
-    (void)arg;
-    
-    printf("服务器监控线程启动\n");
-    
-    while (g_server.running) {
-        // 显示服务器状态
-        printf("\n=== 服务器状态 ===\n");
-        printf("服务器运行: %s\n", g_server.running ? "是" : "否");
-        printf("客户端数量: %d/%d\n", g_server.client_count, MAX_CLIENTS);
-        printf("运行时间: %ld 秒\n", (long)(time(NULL) - g_server.clients[0].connect_time));
-        
-        // 显示连接的客户端
-        pthread_mutex_lock(&g_server.lock);
-        if (g_server.client_count > 0) {
-            printf("连接中的客户端:\n");
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (g_server.clients[i].active) {
-                    struct in_addr in_addr;
-                    in_addr.s_addr = g_server.clients[i].ip_addr.addr;
-                    printf("  [%d] %s - %s:%d (连接时间: %lds)\n", 
-                           i, g_server.clients[i].client_name,
-                           inet_ntoa(in_addr), g_server.clients[i].port,
-                           time(NULL) - g_server.clients[i].connect_time);
+            client->send_buffer = (char *)qosa_malloc(client->send_buffer_len);
+            if (client->send_buffer == NULL)
+            {
+                QLOGE("Memory allocation failed for client[%d]", client_idx);
+                client->active = QOSA_FALSE;
+                qcm_socket_close(sock_hndl);
+                return;
+            }
+
+            qosa_snprintf(
+                client->send_buffer,
+                client->send_buffer_len,
+                "[Server Echo] Your message: %s",
+                buffer
+            );
+            client->send_buffer_len--;  // Exclude null terminator
+            client->send_offset = 0;
+            send_len = qcm_socket_send(sock_hndl, client->send_buffer, client->send_buffer_len);
+            if(send_len == QCM_SOCK_WODBLOCK)
+            {
+                QLOGD("Initial send would block for client[%d], will retry on WRITE event", client_idx);
+            }
+            else if(send_len > 0)
+            {
+                if(send_len == client->send_buffer_len)
+                {
+                    client->send_buffer_len -= send_len;
+                    client->send_offset = 0;
+                }
+                else
+                {
+                    client->send_buffer_len -= send_len;
+                    client->send_offset += send_len;
                 }
             }
-        }
-        pthread_mutex_unlock(&g_server.lock);
-        printf("===================\n");
-        
-        // 等待5秒
-        for (int i = 0; i < 50 && g_server.running; i++) {
-            usleep(100000);  // 100ms
-        }
-    }
-    
-    printf("服务器监控线程结束\n");
-    return NULL;
-}
-
-/**
- * @brief 启动服务器
- */
-int start_server(int port)
-{
-    printf("启动%s...\n", SERVER_NAME);
-    
-    // 初始化服务器状态
-    if (init_server_state() < 0) {
-        printf("初始化服务器状态失败\n");
-        return -1;
-    }
-    
-    // 创建服务器Socket
-    g_server.server_fd = create_server_socket(port);
-    if (g_server.server_fd < 0) {
-        printf("创建服务器Socket失败\n");
-        return -1;
-    }
-    
-    // 开始监听
-    int ret = qcm_socket_listen(g_server.server_fd, 5);
-    if (ret < 0) {
-        printf("监听端口失败，错误码: %d\n", ret);
-        qcm_socket_close(g_server.server_fd);
-        return -1;
-    }
-    
-    printf("服务器开始在端口 %d 上监听\n", port);
-    
-    // 创建监控线程
-    ret = pthread_create(&g_server.monitor_thread, NULL, 
-                        monitor_server_thread, NULL);
-    if (ret != 0) {
-        printf("创建监控线程失败，错误码: %d\n", ret);
-        qcm_socket_close(g_server.server_fd);
-        return -1;
-    }
-    
-    // 开始接受客户端连接
-    accept_clients_thread(NULL);
-    
-    return 0;
-}
-
-/**
- * @brief 停止服务器
- */
-void stop_server(void)
-{
-    printf("正在停止服务器...\n");
-    
-    g_server.running = 0;
-    
-    // 等待接受连接线程结束
-    if (g_server.accept_thread) {
-        pthread_join(g_server.accept_thread, NULL);
-    }
-    
-    // 等待监控线程结束
-    if (g_server.monitor_thread) {
-        pthread_join(g_server.monitor_thread, NULL);
-    }
-    
-    // 关闭所有客户端连接
-    printf("关闭所有客户端连接...\n");
-    pthread_mutex_lock(&g_server.lock);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (g_server.clients[i].active) {
-            printf("关闭客户端: %s\n", g_server.clients[i].client_name);
-            
-            // 等待客户端线程结束
-            if (g_server.clients[i].thread_id) {
-                pthread_join(g_server.clients[i].thread_id, NULL);
+            else
+            {
+                QLOGE("Send error to client[%d]: ret=%d", client_idx, send_len);
             }
-            
-            // 关闭Socket
-            if (g_server.clients[i].fd >= 0) {
-                qcm_socket_close(g_server.clients[i].fd);
+
+            /* Trigger WRITE event to send response */
+            QLOGV("Queuing response for client[%d], will send on WRITE event", client_idx);
+        }
+        else if (ret == QCM_SOCK_BROKEN)
+        {
+            /* Client closed connection */
+            QLOGD("Client[%d] closed connection (received %u, sent %u)",
+                  client_idx, client->recv_count, client->send_count);
+            client->active = QOSA_FALSE;
+            if (client->send_buffer != NULL)
+            {
+                qosa_free(client->send_buffer);
+                client->send_buffer = NULL;
+            }
+            qcm_socket_close(sock_hndl);
+            g_server_ctx.client_count--;
+        }
+        else if (ret == QCM_SOCK_WODBLOCK)
+        {
+            QLOGV("Client[%d] no data available", client_idx);
+        }
+        else
+        {
+            /* Error occurred */
+            QLOGE("Receive error from client[%d]: ret=%d", client_idx, ret);
+            client->active = QOSA_FALSE;
+            if (client->send_buffer != NULL)
+            {
+                qosa_free(client->send_buffer);
+                client->send_buffer = NULL;
+            }
+            qcm_socket_close(sock_hndl);
+            g_server_ctx.client_count--;
+        }
+    }
+    else if (event == QCM_SOCK_WRITE_EVENT)
+    {
+        /* ===== Handle Write Event ===== */
+        QLOGV("Client[%d] WRITE_EVENT", client_idx);
+
+        if (client->send_buffer != NULL && client->send_buffer_len > 0)
+        {
+            /* Send pending data */
+            ret = qcm_socket_send(
+                sock_hndl,
+                client->send_buffer + client->send_offset,
+                client->send_buffer_len - client->send_offset
+            );
+
+            if (ret > 0)
+            {
+                client->send_offset += ret;
+                client->send_count++;
+                QLOGD("Sent to client[%d]: %d bytes (total %d/%d)", 
+                      client_idx, ret, client->send_offset, client->send_buffer_len);
+
+                if (client->send_offset >= client->send_buffer_len)
+                {
+                    /* All data sent */
+                    QLOGD("Client[%d] send complete", client_idx);
+                    qosa_free(client->send_buffer);
+                    client->send_buffer = NULL;
+                    client->send_buffer_len = 0;
+                    client->send_offset = 0;
+                }
+            }
+            else if (ret == QCM_SOCK_WODBLOCK)
+            {
+                QLOGV("Client[%d] send would block, will retry on next WRITE event", client_idx);
+            }
+            else
+            {
+                QLOGE("Send error to client[%d]: ret=%d", client_idx, ret);
+                client->active = QOSA_FALSE;
+                if (client->send_buffer != NULL)
+                {
+                    qosa_free(client->send_buffer);
+                    client->send_buffer = NULL;
+                }
+                qcm_socket_close(sock_hndl);
+                g_server_ctx.client_count--;
             }
         }
     }
-    pthread_mutex_unlock(&g_server.lock);
-    
-    // 关闭服务器Socket
-    if (g_server.server_fd >= 0) {
-        printf("关闭服务器Socket...\n");
-        qcm_socket_close(g_server.server_fd);
-        g_server.server_fd = -1;
+    else if (event == QCM_SOCK_CLOSE_EVENT)
+    {
+        /* ===== Handle Close Event ===== */
+        QLOGD("Client[%d] CLOSE_EVENT, code=%d", client_idx, code);
+        client->active = QOSA_FALSE;
+        if (client->send_buffer != NULL)
+        {
+            qosa_free(client->send_buffer);
+            client->send_buffer = NULL;
+        }
+        qcm_socket_close(sock_hndl);
+        g_server_ctx.client_count--;
     }
-    
-    // 销毁互斥锁
-    pthread_mutex_destroy(&g_server.lock);
-    
-    printf("服务器已停止\n");
 }
 
 /**
- * @brief 信号处理函数
+ * @brief Socket active notification event processing function
  */
-void signal_handler(int sig)
+static void qcm_socket_app_event_process(void *argv)
 {
-    printf("\n收到信号 %d，正在优雅关闭服务器...\n", sig);
-    g_server.running = 0;
-}
+    socket_app_event_ind_t *ind_msg = (socket_app_event_ind_t *)argv;
 
-/**
- * @brief SSL/TLS服务器支持
- */
-#ifdef CONFIG_QCM_VTLS_FUNC
-void* handle_ssl_client_thread(void* arg)
-{
-    int client_index = *(int*)arg;
-    free(arg);
-    
-    int client_fd = g_server.clients[client_index].fd;
-    
-    printf("为客户端 %s 初始化SSL...\n", 
-           g_server.clients[client_index].client_name);
-    
-    // 配置SSL
-    qcm_ssl_config_t ssl_config;
-    memset(&ssl_config, 0, sizeof(ssl_config));
-    
-    // 设置服务器SSL证书等参数
-    // ssl_config.ca_cert = "ca.crt";
-    // ssl_config.server_cert = "server.crt";
-    // ssl_config.server_key = "server.key";
-    // ssl_config.verify_mode = SSL_VERIFY_NONE;
-    
-    int ret = qcm_socket_ssl_config(client_fd, &ssl_config, NULL, QOSA_TRUE);
-    if (ret != 0) {
-        printf("SSL配置失败，错误码: %d\n", ret);
-        return NULL;
-    }
-    
-    // SSL握手
-    ret = qcm_socket_ssl_connect(client_fd);
-    if (ret != 0) {
-        printf("SSL握手失败，错误码: %d\n", ret);
-        return NULL;
-    }
-    
-    printf("SSL连接已建立，可以进行安全通信\n");
-    
-    // 这里可以进行SSL加密通信...
-    char buffer[BUFFER_SIZE];
-    const char* ssl_welcome = "Secure connection established!";
-    qcm_socket_send(client_fd, (char*)ssl_welcome, strlen(ssl_welcome));
-    
-    while (g_server.running) {
-        memset(buffer, 0, sizeof(buffer));
-        ret = qcm_socket_read(client_fd, buffer, sizeof(buffer) - 1);
-        
-        if (ret <= 0) {
+    switch (ind_msg->event_mask)
+    {
+        case QCM_SOCK_ACCEPT_EVENT:
+            qcm_socket_server_on_accept(ind_msg->sockfd,ind_msg->result_code,ind_msg->argv);
             break;
-        }
-        
-        buffer[ret] = '\0';
-        printf("收到SSL加密消息: %s\n", buffer);
-        
-        char response[BUFFER_SIZE];
-        snprintf(response, sizeof(response), "SSL Echo: %s", buffer);
-        qcm_socket_send(client_fd, response, strlen(response));
-    }
-    
-    // 清理SSL资源
-    qcm_socket_ssl_clean(client_fd);
-    printf("SSL资源已清理\n");
-    
-    return NULL;
-}
-#endif
 
-/**
- * @brief 命令行参数解析
- */
-void parse_command_line(int argc, char *argv[])
-{
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--port") == 0) {
-            if (i + 1 < argc) {
-                SERVER_PORT = atoi(argv[i + 1]);
-                i++;
-            }
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("用法: %s [选项]\n", argv[0]);
-            printf("选项:\n");
-            printf("  -p, --port <端口>   指定服务器监听端口（默认: 8080）\n");
-            printf("  -h, --help          显示帮助信息\n");
-            exit(0);
-        }
+        default:
+            break;
     }
 }
 
-/**
- * @brief 主函数
- */
-int main(int argc, char *argv[])
-{
-    // 解析命令行参数
-    parse_command_line(argc, argv);
-    
-    // 设置信号处理
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-    
-    printf("===== %s =====\n", SERVER_NAME);
-    printf("监听端口: %d\n", SERVER_PORT);
-    printf("最大客户端数: %d\n", MAX_CLIENTS);
-#ifdef CONFIG_QCM_VTLS_FUNC
-    printf("SSL/TLS支持: 已启用\n");
-#else
-    printf("SSL/TLS支持: 未启用\n");
-#endif
-    printf("================\n\n");
-    
-    // 启动服务器
-    if (start_server(SERVER_PORT) < 0) {
-        printf("服务器启动失败\n");
-        return -1;
-    }
-    
-    // 主循环
-    printf("服务器运行中，按 Ctrl+C 停止...\n");
-    
-    while (g_server.running) {
-        sleep(1);
-    }
-    
-    // 停止服务器
-    stop_server();
-    
-    printf("服务器程序结束\n");
-    return 0;
-}
+/* ==================== Main Server Function ==================== */
 
 /**
- * @brief 简单的单线程服务器示例
+ * @brief Non-blocking TCP server main processing function
+ *
+ * This function implements an event-driven non-blocking TCP server that:
+ * 1. Activates PDP data connection
+ * 2. Creates a non-blocking listening socket
+ * 3. Registers event callbacks for ACCEPT events
+ * 4. Processes all client events through callbacks
+ * 5. Handles up to 10 concurrent clients
+ *
+ * @param argv Unused parameter
  */
-int simple_server(int port)
+static void qcm_socket_server_main(void *argv)
 {
-    int server_fd = create_server_socket(port);
-    if (server_fd < 0) {
-        return -1;
+    QOSA_UNUSED(argv);
+    
+    int ret = 0;
+    socket_app_event_ind_t *ind_msg;
+    socket_app_msg_info_t msg_info;
+
+    QLOGD("========== Non-Blocking TCP Server Demo Started ==========");
+
+    /* Step 1: Activate PDP data connection */
+    QLOGD("Step 1: Activating PDP...");
+    if (qcm_socket_server_datacall_active() != 0)
+    {
+        QLOGE("Failed to activate PDP, exiting");
+        return;
     }
-    
-    if (qcm_socket_listen(server_fd, 5) < 0) {
-        qcm_socket_close(server_fd);
-        return -1;
+
+    /* Step 2: Create non-blocking listening socket */
+    QLOGD("Step 2: Creating non-blocking listening socket on port %d...", SOCKET_SERVER_LISTEN_PORT);
+    g_server_ctx.listen_socket = qcm_socket_create(
+        SOCKET_SERVER_SIMID,
+        SOCKET_SERVER_PDPID,
+        QCM_AF_INET6,                    // Use IPv4
+        QCM_SOCK_STREAM,                // TCP stream socket
+        QCM_TCP_PROTOCOL,               // TCP protocol
+        SOCKET_SERVER_LISTEN_PORT,      // Bind to port 8080
+        QOSA_FALSE                      // ⚠️ Non-blocking mode
+    );
+
+    if (g_server_ctx.listen_socket < 0)
+    {
+        QLOGE("Failed to create listening socket: ret=%d", g_server_ctx.listen_socket);
+        return;
     }
+
+    QLOGD("Listening socket created successfully (handle=%d)", g_server_ctx.listen_socket);
+
+    /* Step 4: Register event callback for listening socket */
+    QLOGD("Step 4: Registering ACCEPT event callback...");
+    ret = qcm_socket_register_event(
+        g_server_ctx.listen_socket,
+        QCM_SOCK_ACCEPT_EVENT,          // Listen for new connections
+        socket_app_register_event_cb,    // Callback function
+        NULL                             // No user argument
+    );
+
+    /* Step 3: Start listening for connections */
+    QLOGD("Step 3: Starting to listen for connections (backlog=%d)...", SOCKET_SERVER_BACKLOG);
+    ret = qcm_socket_listen(g_server_ctx.listen_socket, SOCKET_SERVER_BACKLOG);
+    if (ret < 0)
+    {
+        QLOGE("Listen failed: ret=%d", ret);
+        qcm_socket_close(g_server_ctx.listen_socket);
+        return;
+    }
+
+    QLOGD("Server listening on port %d. Waiting for clients...", SOCKET_SERVER_LISTEN_PORT);
+
+    if (ret < 0)
+    {
+        QLOGE("Failed to register event callback: ret=%d", ret);
+        qcm_socket_close(g_server_ctx.listen_socket);
+        return;
+    }
+
+    /* Initialize client array */
+    int i;
+    for (i = 0; i < SOCKET_SERVER_MAX_CLIENTS; i++)
+    {
+        g_server_ctx.clients[i].active = QOSA_FALSE;
+        g_server_ctx.clients[i].socket_fd = -1;
+        g_server_ctx.clients[i].send_buffer = NULL;
+    }
+
+    g_server_ctx.server_running = QOSA_TRUE;
+
+    /* Step 5: Main event loop (non-blocking) */
+    QLOGD("Step 5: Entering main event loop...");
+    QLOGD("In non-blocking mode, all socket operations are event-driven.");
+    QLOGD("The server will simply loop and print statistics periodically.");
     
-    printf("简单服务器在端口 %d 上运行\n", port);
-    
-    while (1) {
-        qosa_ip_addr_t client_ip;
-        int client_port;
-        qosa_ip_addr_t local_ip;
-        int local_port;
-        
-        printf("等待客户端连接...\n");
-        
-        int client_fd = qcm_socket_accept(server_fd, &client_ip, &client_port,
-                                         &local_ip, &local_port);
-        if (client_fd < 0) {
-            printf("接受连接失败\n");
+    while (g_server_ctx.server_running == QOSA_TRUE)
+    {
+        qosa_memset(&msg_info, 0, sizeof(socket_app_msg_info_t));
+        ret = qosa_msgq_wait(g_socket_msgq, (qosa_uint8_t *)&msg_info, sizeof(socket_app_msg_info_t), QOSA_WAIT_FOREVER);
+        if (ret != QOSA_OK)
+        {
+            QLOGE("qosa_msgq_wait error");
             continue;
         }
-        
-        struct in_addr in_addr;
-        in_addr.s_addr = client_ip.addr;
-        printf("客户端连接: %s:%d\n", inet_ntoa(in_addr), client_port);
-        
-        // 处理客户端
-        char buffer[256];
-        const char* welcome = "Welcome to Simple Server!";
-        qcm_socket_send(client_fd, (char*)welcome, strlen(welcome));
-        
-        while (1) {
-            memset(buffer, 0, sizeof(buffer));
-            int ret = qcm_socket_read(client_fd, buffer, sizeof(buffer) - 1);
-            
-            if (ret <= 0) {
-                printf("客户端断开连接\n");
-                break;
-            }
-            
-            buffer[ret] = '\0';
-            printf("收到: %s\n", buffer);
-            
-            char response[256];
-            snprintf(response, sizeof(response), "Echo: %s", buffer);
-            qcm_socket_send(client_fd, response, strlen(response));
-            
-            if (strcmp(buffer, "quit") == 0) {
-                printf("客户端请求退出\n");
-                break;
-            }
+
+        switch (msg_info.event_type)
+        {
+        case SOCKET_APP_NOBLOCK_MSG_EVENT_IND:
+            qcm_socket_app_event_process(msg_info.argv);
+            break;    
+        case SOCKET_APP_CLIENT_MSG_EVENT_IND:
+            ind_msg = (socket_app_event_ind_t *)msg_info.argv;
+            qcm_socket_server_on_client_event(ind_msg->sockfd, ind_msg->event_mask, ind_msg->result_code, ind_msg->argv);
+            break;
+        default:
+            break;
         }
-        
-        qcm_socket_close(client_fd);
-        printf("客户端连接已关闭\n");
+
+        if(msg_info.argv)
+        {
+            free(msg_info.argv);
+        }
     }
-    
-    qcm_socket_close(server_fd);
-    return 0;
+
+    /* Cleanup: Close all client connections */
+    QLOGD("Closing all client connections...");
+    for (i = 0; i < SOCKET_SERVER_MAX_CLIENTS; i++)
+    {
+        if (g_server_ctx.clients[i].active == QOSA_TRUE)
+        {
+            QLOGD("Closing client[%d]", i);
+            if (g_server_ctx.clients[i].send_buffer != NULL)
+            {
+                qosa_free(g_server_ctx.clients[i].send_buffer);
+                g_server_ctx.clients[i].send_buffer = NULL;
+            }
+            qcm_socket_close(g_server_ctx.clients[i].socket_fd);
+            g_server_ctx.clients[i].active = QOSA_FALSE;
+        }
+    }
+
+    /* Close listening socket */
+    QLOGD("Closing listening socket...");
+    qcm_socket_close(g_server_ctx.listen_socket);
+    g_server_ctx.listen_socket = -1;
+
+    QLOGD("========== Non-Blocking TCP Server Demo Ended ==========");
+}
+
+/* ==================== Initialization ==================== */
+
+/**
+ * @brief Initialize non-blocking TCP server demo
+ *
+ * This function creates a task to run the non-blocking TCP server.
+ */
+void unir_qcm_socket_server_nonblock_demo_init(void)
+{
+    int err = 0;
+    qosa_task_t server_task = QOSA_NULL;
+
+    QLOGD("Initializing non-blocking TCP server demo...");
+
+    err = qosa_msgq_create(&g_socket_msgq, sizeof(socket_app_msg_info_t), 20);
+    if (err != QOSA_OK)
+    {
+        QLOGE("qosa_msgq_create error");
+        return;
+    }
+
+    err = qosa_task_create(
+        &server_task,
+        SOCKET_SERVER_DEMO_TASK_STACK_SIZE,
+        SOCKET_SERVER_DEMO_TASK_PRIO,
+        "tcp_server_nb",
+        qcm_socket_server_main,
+        QOSA_NULL
+    );
+
+    if (err != QOSA_OK)
+    {
+        QLOGE("Failed to create server task: err=%d", err);
+        qosa_msgq_delete(g_socket_msgq);
+        return;
+    }
+
+    QLOGD("Server task created successfully");
 }

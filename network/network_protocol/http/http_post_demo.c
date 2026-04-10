@@ -1,14 +1,33 @@
-#include "quecos_atcmd_cfg.h"
-#include "quecos_http_app.h"
-#include "qosa_def.h"
+/*****************************************************************/ /**
+* @file qurl_http_post_demo.c
+* @brief
+* @author harry.li@quectel.com
+* @date 2025-05-7
+*
+* @copyright Copyright (c) 2023 Quectel Wireless Solution, Co., Ltd.
+* All Rights Reserved. Quectel Wireless Solution Proprietary and Confidential.
+*
+* @par EDIT HISTORY FOR MODULE
+* <table>
+* <tr><th>Date <th>Version <th>Author <th>Description
+* <tr><td>2025-05-7 <td>1.0 <td>harry.li <td> Init
+* </table>
+**********************************************************************/
+
 #include "qosa_sys.h"
+#include "qosa_def.h"
 #include "qosa_log.h"
 #include "qurl.h"
+#include "qosa_virtual_file.h"
 
-//自定义请求头数据
-static char  head_data[] = "POST / HTTP/1.1\r\nHost: 220.180.239.212:8300/processorder.php\r\nAccept: */*\r\n\r\n";
-static char  body_data[] = "Message=1111&Appleqty=2222&Orangeqty=3333&find=1\r\n\r\n";
-static char g_buff[2049] = {0};
+#define QOS_LOG_TAG                    LOG_TAG
+
+#define UNIR_HTTP_DEMO_TASK_STACK_SIZE 4096
+#define UNIR_HTTP_DEMP_PDPID           1
+
+#define QURL_HTTP_APP_MAX(a, b)        (((a) > (b)) ? (a) : (b))
+#define QURL_HTTP_APP_MIN(a, b)        (((a) < (b)) ? (a) : (b))
+
 struct qurl_app_r_buf_s
 {
     char *buf_ptr;
@@ -17,220 +36,190 @@ struct qurl_app_r_buf_s
 };
 typedef struct qurl_app_r_buf_s qurl_app_r_buf_t;
 
-//用户读取请求 header 的回调函数，示例固定读取head_data，实际使用可以根据需要输入特定的自定义请求头
-//未通过QURL_OPT_UPLOAD_HEAD_SIZE指定长度内部会自动检查\r\n\r\n判断结束
-static long qurl_http_app_r_raw_head_cb(char *buf, long size, void *arg)
-{
-    qurl_app_r_buf_t *r_buf_ptr = (qurl_app_r_buf_t *)arg;
+static char g_form_data2[] = "this is test2";
 
-    if (size < 1)
-    {
-        return 0;
-    }
-
-    size = QURL_HTTP_APP_MIN(size, r_buf_ptr->buf_len - r_buf_ptr->r_index);
-    memcpy(buf, r_buf_ptr->buf_ptr, size);
-    r_buf_ptr->r_index += size;
-
-    return size;
-}
-//用户读取请求 body 的回调函数，示例固定读取body_data，实际使用可以根据需要输入特定的请求body
-//未通过QURL_OPT_UPLOAD_SIZE指定长度通过回调返回0的方式判断结束
-static long qurl_http_app_r_body_cb(char *buf, long size, void *arg)
-{
-    qurl_app_r_buf_t *r_buf_ptr = (qurl_app_r_buf_t *)arg;
-
-    if (size < 1)
-    {
-        return 0;
-    }
-
-    size = QURL_HTTP_APP_MIN(size, r_buf_ptr->buf_len - r_buf_ptr->r_index);
-    memcpy(buf, r_buf_ptr->buf_ptr, size);
-    r_buf_ptr->r_index += size;
-
-    return size;
-}
-//用户接收回应 header 的回调函数，示例只是将回应 header 打印出来，实际使用可以根据需要进行特定的处理。
 static long qurl_http_app_w_h_cb(char *buf, long size, void *arg)
 {
-    long len = size;
-    long log_len = len > 2048 ? 2048 : len;
+    // Prevent unused parameter warning
+    QOSA_UNUSED(arg);
 
-    (void)arg;
-
-    memcpy(g_buff, buf, log_len);
-    g_buff[log_len] = 0;
-
-    QLOGV("%s", g_buff);
-
-    return len;
-}
-//用户接收回应 body 的回调函数，示例只是将回应 body 打印出来，实际使用可以根据需要进行特定的处理。
-static long qurl_http_app_w_cb(char *buf, long size, void *arg)
-{
-    long len = size;
-    long log_len = len > 2048 ? 2048 : len;
-
-    (void)arg;
-
-    memcpy(g_buff, buf, log_len);
-    g_buff[log_len] = 0;
-
-    QLOGV("%s", g_buff);
-    QLOGV("%d\r\n", size);
-
-    return len;
+    // Record received data size and content to application log
+    QLOGD("size=%d,%s", size, buf);
+    return size;
 }
 
 /**
- * @brief 通过 qurl 实现 http post功能演示
+ * @brief HTTP application layer read form data callback function
  *
- * 该函数实现了一个 http post 操作的完整流程，展示了如何基于qurl系统发起 http post 请求去向服务器提交数据。
- * 主要实现了 qurl 相关配置项的配置以及 qurl 请求的发起。
- * 包括一个新的 qurl 实例的创建用于发起 http post请求。
- * 配置 http post 请求的url。
- * 配置pdp通道，qurl传输操作总的超时时间以及 http 请求方法。
- * 配置用户读取请求 header 的回调函数以及传入回调函数中的用户参数。读取请求 header 的一种方式：通过回调函数去读取请求header。
- * 配置用户读取请求 body 的回调函数以及传入回调函数中的用户参数。读取请求 body 的一种方式：通过回调函数去读取请求body。
- * 配置用户接收回应 body 的回调函数以及传入回调函数中的用户参数。
- * 配置 HTTP 身份验证方案以及登录服务器使用的用户名和密码。
- * 配置 http 请求使用自定义请求头。
- * 配置使能跟随重定向。
- * 配置 http post 指定分块上传的范围。
- * 配置用户接收回应 header 的回调函数以及传入回调函数中的用户参数。
- * qurl_core_perform发起 http post 请求。等待请求结果并通过回调函数处理 http post 过程中的数据。
- * 请求结束释放之前使用到的单向链表。
- * 请求结束删除之前创建的 qurl 实例。
+ * @param buf Buffer pointer for storing read data
+ * @param size Requested read data size
+ * @param arg Pointer to user-passed data
+ *
+ * @return Actual uploaded data size, returns 0 indicates no data to read
  */
-qosa_int32_t http_post_demo()
+long qurl_http_app_r_form_cb(unsigned char *buf, long size, void *arg)
 {
-    qurl_core_t  core = QOSA_NULL;
-    qurl_ecode_t     ret = QURL_OK;
-    qurl_slist_t     qurl_headers = QOSA_NULL;
-    qosa_bool_t      raw_request = 1;
-    qurl_app_r_buf_t r_head_buf = {0};
+    qurl_app_r_buf_t *r_buf_ptr = (qurl_app_r_buf_t *)arg;
 
-    r_head_buf.buf_ptr = head_data;
-    r_head_buf.buf_len = qosa_strlen(head_data);
-    r_head_buf.r_index = 0;
-
-    qosa_nw_err_e res = QOSA_NW_ERR_OK;  // Network error code
-    qosa_uint8_t reg_status = {0};  // Network registration status
-    qosa_uint8_t i = 0;             // Loop counter
-    // Check network registration status, retry up to 10 times
-    for (i = 0; i < 10; i++)
+    /* Check if requested write data size is valid */
+    if (size < 1)
     {
-        res = qosa_nw_get_reg_status(LICENSE_SET_SIM_CID, QOSA_NULL, &reg_status);
-        if ((res != QOSA_NW_ERR_OK) || (QOSA_FALSE == QOSA_NW_ATTACHED(reg_status)))
-        {
-            QLOGE("Network status error: 0x%x, Registration status:%d", res, reg_status);
-            if (i >= 9)
-            {
-                QLOGE("Network registration failed!");
-                return;
-        }
-        qosa_task_sleep_sec(1);  // Wait 1 second before retry
+        return 0;
     }
-        else
-        {
-            i = 0;
-            QLOGV("Network registration successful!");
-            break;
-        }
-    }
-        // Activate data connection
-    license_http_datacall_active();
 
-    if (QURL_OK != qurl_global_init()) {
-        QLOGE("qurl_global_init failed");
-        return;
-    }
-    QLOGD("qurl_global_init success");
+    /* Calculate actual writable data size to avoid exceeding buffer boundaries */
+    size = QURL_HTTP_APP_MIN(size, r_buf_ptr->buf_len - r_buf_ptr->r_index);
 
-    if (QURL_OK != qurl_core_create(&core)) {
-        QLOGE("qurl_core_create failed");
-        qurl_global_deinit();
-        return;
-    }
-    QLOGD("qurl_core_create success");
+    /* Copy data from buffer to target buffer */
+    qosa_memcpy(buf, r_buf_ptr->buf_ptr + r_buf_ptr->r_index, size);
 
-    QLOGV("%p\r\n", core);
-    //配置 http get请求的url
-    qurl_core_setopt(core, QURL_OPT_URL, "https://httpbin.org/post");
-    //配置使用的pdp通道为1
-    qurl_core_setopt(core, QURL_OPT_NETWORK_ID, 1);
-    //配置qurl传输操作总的超时时间为30s
-    qurl_core_setopt(core, QURL_OPT_TIMEOUT_MS, 30 * 1000);
-    //配置http请求方法为GET请求
-    qurl_core_setopt(core, QURL_OPT_HTTP_POST, 1L);
-    //配置用户读取请求 header 的回调函数，读取请求 header 的一种方式，其他方法可以参考通用配置项中的QURL_OPT_UPLOAD_HEAD_DATA和QURL_OPT_UPLOAD_HEAD_FILE
-    qurl_core_setopt(core, QURL_OPT_READ_HEAD_CB, qurl_http_app_r_raw_head_cb);
-    //配置传入读取请求 header 回调函数中的用户参数，其中包含自定义请求头的内容
-    qurl_core_setopt(core, QURL_OPT_READ_HEAD_CB_ARG, &r_head_buf);
-    //配置用户接收回应 body 的回调函数
-    qurl_core_setopt(core, QURL_OPT_WRITE_CB, qurl_http_app_w_cb);
-    //配置传入接收回应 body 回调函数中的用户参数，用户可根据需要传入想要的参数
-    //qurl_core_setopt(core, QURL_OPT_WRITE_CB_ARG, arg);
-    if (raw_request == 0)
+    /* Update write index position */
+    r_buf_ptr->r_index += size;
+
+    /* All written */
+    if (r_buf_ptr->r_index >= r_buf_ptr->buf_len)
     {
-        //配置 HTTP 身份验证方案以及登录服务器使用的用户名和密码
-        qurl_core_setopt(core, QURL_OPT_HTTP_AUTH, QURL_HTTP_AUTH_BASIC);
-        qurl_core_setopt(core, QURL_OPT_USERNAME, "test");
-        qurl_core_setopt(core, QURL_OPT_PASSWORD, "test");
-        //手动将请求头项插入到字符串链表中
-        qurl_headers = qurl_slist_add_strdup(qurl_headers, "Content-Type: 05");
-        qurl_headers = qurl_slist_add_strdup(qurl_headers, "Accept-Charset: ascii");
-        qurl_core_setopt(core, QURL_OPT_HTTP_HEADER, qurl_headers);
+        r_buf_ptr->r_index = 0;
     }
-    else
-    {
-        //http 请求使用自定义请求头,通过回调函数读取自定义请求头
-        qurl_core_setopt(core, QURL_OPT_UPLOAD_HEAD_RAW, 1L);
-    }
-    //使能跟随重定向
-    qurl_core_setopt(core, QURL_OPT_FOLLOWLOCATION, 1L);
 
-    //http get请求服务器资源的下载范围
-    qurl_core_setopt(core, QURL_OPT_RANGE, "100-200");
-    //配置用户接收回应 header 的回调函数
+    return size;
+}
+
+static long qurl_http_app_w_cb(char *buf, long size, void *arg)
+{
+    QOSA_UNUSED(arg);
+
+    QLOGD("size=%d,%s", size, buf);
+    return size;
+}
+
+/**
+ * @brief Execute HTTP POST form upload operation, demonstrating uploading form data through different methods.
+ *
+ * This function uses the qurl library to complete an HTTP POST request, uploading multiple form fields including:
+ * - Directly uploading string data;
+ * - Uploading data from global variables;
+ * - Uploading data through callback functions.
+ *
+ * Also sets response header and response body callback processing functions, and prints response status code and content length after request completion.
+ *
+ * @return qurl_ecode_t Execution result status code, QURL_OK indicates success.
+ */
+qurl_ecode_t qurl_http_app_post_form(void)
+{
+    qurl_ecode_t         ret = QURL_OK;
+    qurl_core_t          core = QOSA_NULL;
+    long                 resp_code = 0;
+    long                 content_length = 0;
+    qurl_http_form_cfg_t form_cfg = {0};
+    qurl_app_r_buf_t     r_buff = {0};
+
+    // Initialize global resources
+    qurl_global_init();
+
+    // Create core handle
+    ret = qurl_core_create(&core);
+    if (ret != QURL_OK)
+    {
+        QLOGE("%x\r\n", ret);
+    }
+
+    // Set target URL
+    ret = qurl_core_setopt(core, QURL_OPT_URL, "http://httpbin.org/post");
+    if (ret != QURL_OK)
+    {
+        QLOGE("%x\r\n", ret);
+    }
+
+    // Set network ID and POST form mode
+    qurl_core_setopt(core, QURL_OPT_NETWORK_ID, UNIR_HTTP_DEMP_PDPID);
+    qurl_core_setopt(core, QURL_OPT_HTTP_POST_FORM, 1L);
+
+    // Add first form field: directly upload string data
+    form_cfg.name_ptr = "test1";
+    form_cfg.filename_ptr = "file1";
+    form_cfg.content_type = QURL_HTTP_FORM_CONTENT_DATA;
+    form_cfg.content_ptr = "this is test1";
+    form_cfg.read_content_func = QOSA_NULL;
+    form_cfg.content_len = qosa_strlen(form_cfg.content_ptr);
+    qurl_core_setopt(core, QURL_OPT_FORM, 1L, &form_cfg);
+
+    // Add second form field: upload string data from global variables
+    form_cfg.name_ptr = "test2";
+    form_cfg.filename_ptr = "file2";
+    form_cfg.content_type = QURL_HTTP_FORM_CONTENT_DATA;
+    form_cfg.content_ptr = g_form_data2;
+    form_cfg.read_content_func = QOSA_NULL;
+    form_cfg.content_len = qosa_strlen(g_form_data2);
+    qurl_core_setopt(core, QURL_OPT_FORM, 2L, &form_cfg);
+
+    // Add third form field: upload data through callback function
+    r_buff.buf_ptr = qosa_malloc(20);
+    qosa_memset(r_buff.buf_ptr, 0, 20);
+    qosa_snprintf(r_buff.buf_ptr, 19, "%s", "this is test3");
+    r_buff.r_index = 0;
+    r_buff.buf_len = qosa_strlen(r_buff.buf_ptr);
+    form_cfg.name_ptr = "test3";
+    form_cfg.filename_ptr = "file3";
+    form_cfg.content_type = QURL_HTTP_FORM_CONTENT_CB;
+    form_cfg.read_content_func = qurl_http_app_r_form_cb;
+    form_cfg.content_ptr = &r_buff;
+    form_cfg.content_len = r_buff.buf_len;
+
+    qurl_core_setopt(core, QURL_OPT_FORM, 3L, &form_cfg);
+
+    // Set response header and response body callback processing functions
     qurl_core_setopt(core, QURL_OPT_WRITE_HEAD_CB, qurl_http_app_w_h_cb);
-    //配置传入接收回应 header 回调函数中的用户参数，用户可根据需要传入想要的参数
-    //qurl_core_setopt(core, QURL_OPT_WRITE_HEAD_CB_ARG, arg);
+    qurl_core_setopt(core, QURL_OPT_WRITE_CB, qurl_http_app_w_cb);
 
-    //发起 http get 请求，阻塞等待请求的结果
+    // Execute HTTP request
     ret = qurl_core_perform(core);
-     if (ret != QURL_OK)
-     {
-         QLOGE("%x\r\n", ret);
-         goto exit;
-     }
-     //请求结束释放之前使用到的单向链表
-     if (qurl_headers != QOSA_NULL)
-     {
-         qurl_slist_del_all(qurl_headers);
-         qurl_headers = QOSA_NULL;
-     }
-     //请求结束删除之前创建的qurl实例
-     if(qurl_core_delete(core) != QURL_OK)
-     {
-         QLOGE("qurl_core_delete failed");
-         goto exit;
-     }
-     else
-     {
-         core = QOSA_NULL;
-         QLOGV("qurl_core_delete success");
-     }
-     exit:
-    if (qurl_headers != QOSA_NULL)
+    if (ret != QURL_OK)
     {
-        qurl_slist_del_all(qurl_headers);
-        qurl_headers = QOSA_NULL;
+        QLOGE("%x\r\n", ret);
     }
-    if (core != QOSA_NULL)
+
+    // Execute again (possibly for retry or debugging)
+    qurl_core_perform(core);
+
+    // Get response status code
+    qurl_core_getinfo(core, QURL_INFO_RESP_CODE, &resp_code);
+    QLOGV("resp_code:[%d]\r\n", resp_code);
+
+    // Get response content length
+    qurl_core_getinfo(core, QURL_INFO_RESP_CONTENT_LENGTH, &content_length);
+    QLOGV("content_length:[%d]\r\n", content_length);
+
+    // Delete core handle, release resources
+    ret = qurl_core_delete(core);
+    if (ret != QURL_OK)
     {
-        qurl_core_delete(core);
+        QLOGE("%x\r\n", ret);
     }
-    return;
+    qosa_free(r_buff.buf_ptr);
+
+    return QURL_OK;
+}
+
+static void unir_http_post_app_init(void *argv)
+{
+    qurl_ecode_t ret = QURL_OK;
+
+    qosa_task_sleep_sec(10);
+    ret = qurl_http_app_post_form();
+    QLOGE("ret=%d", ret);
+}
+
+void unir_qurl_http_post_demo_init(void)
+{
+    int         err = 0;
+    qosa_task_t http_task = QOSA_NULL;
+    QLOGE("http11111111111111111");
+    err = qosa_task_create(&http_task, UNIR_HTTP_DEMO_TASK_STACK_SIZE, QOSA_PRIORITY_NORMAL, "http_post_demo", unir_http_post_app_init, QOSA_NULL);
+    if (err != QOSA_OK)
+    {
+        QLOGE("task create error");
+        return;
+    }
+    QLOGE("http1122222222222222");
 }
