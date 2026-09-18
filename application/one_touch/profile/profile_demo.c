@@ -1,5 +1,4 @@
 #include "qosa_def.h"
-#include "unirtos_app_init_registry.h"
 
 #define PROFILE_DEMO_SIM_ID 0
 #define PROFILE_DEMO_PDP_ID 1
@@ -33,5 +32,3 @@ static void profile_demo_init(void)
     // 将【用户自定义模板0】的拨号参数，下发写入到指定SIM卡、指定PDP链路中，完成拨号参数配置生效
     qapp_easy_nw_datacall_prof_tpl_write(sim_id, pdp_id, QAPP_EASY_NW_DATACALL_PROF_TPL_USER_0);
 }
-
-UNIRTOS_APP_EXPORT(200, "profile_demo", profile_demo_init);

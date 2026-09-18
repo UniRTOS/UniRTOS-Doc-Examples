@@ -19,7 +19,6 @@
 #include "qosa_log.h"
 
 #include "usb_demo.h"
-#include "unirtos_app_init_registry.h"
 
 /*===========================================================================
  *  Macro Definition
@@ -66,5 +65,3 @@ void quec_usb_demo_init(void)
         );
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "usb_demo", quec_usb_demo_init);

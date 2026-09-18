@@ -1,7 +1,6 @@
 #include "qosa_sys.h"
 #include "qosa_def.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG LOG_TAG_DEMO
 #define MEMORY_DEMO_TASK_STACK_SIZE 4096
@@ -183,5 +182,3 @@ void unir_memory_demo_init(void)
 		QLOGE("create memory demo task failed");
 	}
 }
-
-UNIRTOS_APP_EXPORT(200, "memory", unir_memory_demo_init);

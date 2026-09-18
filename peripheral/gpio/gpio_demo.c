@@ -20,7 +20,6 @@
 #include "gpio_demo.h"
 #include <stdlib.h>
 #include <string.h>
-#include "unirtos_app_init_registry.h"
 
 /*===========================================================================
  *  Macro Definition
@@ -305,4 +304,3 @@ void quec_gpio_demo_init(void)
     }
 }
 
-UNIRTOS_APP_EXPORT(200, "gpio_demo", quec_gpio_demo_init);

@@ -1,5 +1,4 @@
 #include "qosa_def.h"
-#include "unirtos_app_init_registry.h"
 
 #define BLACKLIST_DEMO_SIM_ID 0
 #define BLACKLIST_DEMO_PDP_ID 1
@@ -25,5 +24,3 @@ static void blacklist_demo_init(void)
     // 将用户自定义黑名单模板0 的配置参数，下发写入到指定SIM卡和PDP链路，配置生效
     qapp_easy_nw_blacklist_tpl_write(sim_id, pdp_id, QAPP_EASY_NW_BLACKLIST_TPL_USER_0);
 }
-
-UNIRTOS_APP_EXPORT(200, "blacklist_demo", blacklist_demo_init);

@@ -22,7 +22,6 @@
 #include "qosa_sockets.h"
 #include "qosa_sys.h"
 #include "qosa_watermark.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                         LOG_TAG
 #define SOCKET_NOBLOCK_DEMO_TASK_STACK_SIZE 4096
@@ -965,5 +964,3 @@ void unir_qcm_socket_noblock_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "tcp_noblock_client", unir_qcm_socket_noblock_demo_init);

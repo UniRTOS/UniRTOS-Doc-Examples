@@ -19,7 +19,6 @@
 #include "qosa_log.h"
 
 #include "uart_demo.h"
-#include "unirtos_app_init_registry.h"
 
 /*===========================================================================
  *  Macro Definition
@@ -40,10 +39,12 @@ static qosa_uint16_t g_uart_test_case = QOSA_UART_DEMO_OUTPUT;
  *  Static API Functions
  ===========================================================================*/
  /**
- * @brief UART浜嬩欢鍥炶皟澶勭悊鍑芥暟
+ * @brief UART事件回调处理函数
  * 
- * 璇ュ嚱鏁扮敤浜庡鐞哢ART绔彛鐨勫悇绉嶄簨浠舵寚绀猴紝鍖呮嫭鎺ユ敹鏁版嵁銆佸彂閫佸畬鎴愬拰鍙戦€佺紦鍐插尯浣庢按浣嶇瓑浜嬩欢銆? * 褰撲簨浠跺彂鐢熸椂锛屼細灏嗕簨浠朵俊鎭€氳繃UART鍙戦€佸嚭鍘汇€? * 
- * @param cb_param UART鍥炶皟鍙傛暟缁撴瀯浣撴寚閽堬紝鍖呭惈绔彛鍙枫€佷簨浠禝D鍜岀敤鎴锋暟鎹瓑淇℃伅
+ * 该函数用于处理UART端口的各种事件指示，包括接收数据、发送完成和发送缓冲区低水位等事件。
+ * 当事件发生时，会将事件信息通过UART发送出去。
+ * 
+ * @param cb_param UART回调参数结构体指针，包含端口号、事件ID和用户数据等信息
  */
 static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
 {
@@ -51,7 +52,7 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
     qosa_uint32_t           event_id = cb_param->event_id;
     char                    data[128] = {0};
     qosa_snprintf(data, sizeof(data), "port=%d, event_id=%d, user_data=%s", port, event_id, (unsigned char *)cb_param->user_data);
-    // 鏍规嵁涓嶅悓鐨刄ART浜嬩欢绫诲瀷杩涜鐩稿簲澶勭悊
+    // 根据不同的UART事件类型进行相应处理
     if (cb_param->event_id & QOSA_UART_EVENT_RX_INDICATE)
     {
         qosa_uart_write(port, (unsigned char *)data, sizeof(data));
@@ -67,22 +68,25 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
 }
 
 /**
- * @brief UART鍔熻兘澶勭悊鍑芥暟锛岀敤浜庨厤缃拰娴嬭瘯UART鎺ュ彛鐨勫悇绉嶅姛鑳姐€? *
- * 璇ュ嚱鏁板垵濮嬪寲UART绔彛锛屾敞鍐屽洖璋冨嚱鏁帮紝骞舵牴鎹叏灞€鍙橀噺 g_uart_test_case 鐨勫€兼墽琛屼笉鍚岀殑娴嬭瘯鐢ㄤ緥锛? * 鍖呮嫭杈撳嚭鏁版嵁銆佽鍙栨暟鎹€佹尝鐗圭巼鍒囨崲浠ュ強妯″紡鍒囨崲绛夋搷浣溿€? *
+ * @brief UART功能处理函数，用于配置和测试UART接口的各种功能。
+ *
+ * 该函数初始化UART端口，注册回调函数，并根据全局变量 g_uart_test_case 的值执行不同的测试用例，
+ * 包括输出数据、读取数据、波特率切换以及模式切换等操作。
+ *
  */
  static void quec_uart_demo_process(void *ctx)
 {
     int ret = 0;
 
     qosa_uart_status_monitor_t monitor = {0};
-    monitor.callback = quec_uart_ind; /* 娉ㄥ唽鍥炶皟鍑芥暟 */
+    monitor.callback = quec_uart_ind; /* 注册回调函数 */
     monitor.event_mask = QOSA_UART_EVENT_RX_INDICATE | QOSA_UART_EVENT_TX_COMPLETE;
     monitor.user_data = "Hello, Uart!";
     
-    /* 娉ㄥ唽UART浜嬩欢鍥炶皟 */
+    /* 注册UART事件回调 */
     qosa_uart_register_cb(QUEC_TEST_UART_PORT, &monitor);
 
-    /* 閰嶇疆UART閫氫俊鍙傛暟锛氭尝鐗圭巼銆佹暟鎹綅銆佸仠姝綅銆佹牎楠屼綅銆佹祦鎺?*/
+    /* 配置UART通信参数：波特率、数据位、停止位、校验位、流控 */
     qosa_uart_config_t dcb_config = {0};
     dcb_config.baudrate = QOSA_UART_BAUD_115200;
     dcb_config.data_bit = QOSA_UART_DATABIT_8;
@@ -92,26 +96,26 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
 
     qosa_uart_ioctl(QUEC_TEST_UART_PORT, QOSA_UART_IOCTL_SET_DCB_CFG, (void *)&dcb_config);
     
-        /* 鎵撳紑UART绔彛 */
+        /* 打开UART端口 */
     qosa_uart_open(QUEC_TEST_UART_PORT);
 
     while (1)
     {
         switch (g_uart_test_case)
         {
-            /* 娴嬭瘯UART鍙戦€佸姛鑳?*/
+            /* 测试UART发送功能 */
             case QOSA_UART_DEMO_OUTPUT: {
                 qosa_task_sleep_sec(1);
                 qosa_uart_write(QUEC_TEST_UART_PORT, (unsigned char *)"hello Quectel\r\n", 15);
             }
             break;
-            /* 娴嬭瘯UART鎺ユ敹鍔熻兘锛堥€氳繃鍥炶皟澶勭悊锛?*/
+            /* 测试UART接收功能（通过回调处理） */
             case QOSA_UART_DEMO_READ_1: {
                 qosa_task_sleep_sec(1);
                 /* Received data in uart callback */
             }
             break;
-            /* 娴嬭瘯UART鎺ユ敹鍔熻兘锛堜富鍔ㄨ鍙栵級 */
+            /* 测试UART接收功能（主动读取） */
             case QOSA_UART_DEMO_READ_2: {
                 qosa_task_sleep_sec(5);
                 qosa_uart_read(QUEC_TEST_UART_PORT, (unsigned char *)&g_uart_data, 1024);
@@ -121,7 +125,7 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
                 QLOGI("qosa_uart_write ret = %d", ret);
              }
             break;
-            /* 娴嬭瘯涓嶅悓娉㈢壒鐜囦笅鐨刄ART閫氫俊 */
+            /* 测试不同波特率下的UART通信 */
             case QOSA_UART_DEMO_BAUDRATE: {
                 const qosa_uint32_t baudRateList[] = {0, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600};
 
@@ -135,7 +139,7 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
                 }
             }
             break;
-            /* 娴嬭瘯UART妯″紡鍒囨崲鍔熻兘锛圲art妯″紡涓嶢T鍛戒护妯″紡锛?*/
+            /* 测试UART模式切换功能（Uart模式与AT命令模式） */
             case QOSA_UART_DEMO_CHANGE_CCIO_MODE: {
                 qosa_uart_mode_e ccio_mode;
                 int              i;
@@ -150,7 +154,7 @@ static void quec_uart_ind(qosa_uart_cb_param_t *cb_param)
                 
                 ccio_mode = QOSA_UART_MODE_AT;
                 qosa_uart_write(QUEC_TEST_UART_PORT, (unsigned char *)"Enter AT Mode\r\n", 15);
-                qosa_task_sleep_sec(1); /* 绛夊緟鍙戦€佺粨鏉?*/
+                qosa_task_sleep_sec(1); /* 等待发送结束 */
                 qosa_uart_ioctl(QUEC_TEST_UART_PORT, QOSA_UART_IOCTL_SET_CCIO_MODE, (void *)&ccio_mode);
                 qosa_task_sleep_sec(20);
             }
@@ -186,5 +190,3 @@ void quec_uart_demo_init(void)
         );
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "uart_demo", quec_uart_demo_init);

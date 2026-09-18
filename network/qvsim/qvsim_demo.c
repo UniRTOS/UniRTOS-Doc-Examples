@@ -21,7 +21,6 @@
 #include "qosa_sim.h"
 #include "qosa_event_notify.h"
 #include "qvsim_demo.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                         LOG_TAG
 
@@ -423,5 +422,3 @@ void unir_qvsim_demo_init(void)
         }
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "qvsim_demo", unir_qvsim_demo_init);

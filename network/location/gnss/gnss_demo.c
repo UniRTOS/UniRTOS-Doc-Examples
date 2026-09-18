@@ -4,7 +4,6 @@
 #include "qcm_gnss_api.h"
 #include "qosa_datacall.h"
 #include "qosa_system_utils.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                       LOG_TAG
 #define GNSS_DEMO_TASK_STACK_SIZE 4096
@@ -198,5 +197,3 @@ void unir_gnss_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "gnss_demo", unir_gnss_demo_init);

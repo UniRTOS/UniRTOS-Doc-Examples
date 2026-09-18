@@ -2,14 +2,13 @@
 #include "qosa_def.h"
 #include "qosa_sys.h"
 #include "qosa_virtual_file.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                   LOG_TAG
 
 #define UNIR_VFS_DEMO_TASK_STACK_SIZE 4096
 
 /**
- * @brief 閬嶅巻鎸囧畾鐩綍涓嬫墍鏈夋枃浠跺拰瀛愮洰褰曪紝杈撳嚭璇︾粏淇℃伅
+ * @brief 遍历指定目录下所有文件和子目录，输出详细信息
  */
 static void unir_vfs_demo_dir_list(char *file_path)
 {
@@ -20,7 +19,7 @@ static void unir_vfs_demo_dir_list(char *file_path)
     qosa_int32_t              ret = 0;
     char                      child[QOSA_VFS_PATH_MAX] = {0};
 
-    /* 鎵撳紑鐩綍 */
+    /* 打开目录 */
     dir = qosa_vfs_opendir(file_path);
     if (dir == QOSA_NULL)
     {
@@ -28,14 +27,14 @@ static void unir_vfs_demo_dir_list(char *file_path)
         return;
     }
 
-    /* 寰幆璇诲彇鐩綍鏉＄洰 */
+    /* 循环读取目录条目 */
     while ((entry = qosa_vfs_readdir(dir)) != QOSA_NULL)
     {
         QLOGV("%s\n", entry->d_name);
 
         if (entry->d_type == QOSA_VFS_DT_REG)
         {
-            /* 鏅€氭枃浠讹細鑾峰彇鏂囦欢鐘舵€佷俊鎭?*/
+            /* 普通文件：获取文件状态信息 */
             char path[1024] = {0};
             qosa_snprintf(path, sizeof(path), "./%s", entry->d_name);
 
@@ -52,7 +51,7 @@ static void unir_vfs_demo_dir_list(char *file_path)
         }
         else if (entry->d_type == QOSA_VFS_DT_DIR)
         {
-            /* 瀛愮洰褰曪細鑾峰彇鐩綍鎬诲ぇ灏?*/
+            /* 子目录：获取目录总大小 */
             qosa_memset(child, 0, sizeof(child));
             qosa_snprintf(child, sizeof(child), "%s/%s", file_path, entry->d_name);
             size = qosa_vfs_dir_total_size(child);
@@ -67,7 +66,8 @@ static void unir_vfs_demo_dir_list(char *file_path)
 }
 
 /**
- * @brief 鐩綍鎿嶄綔娴嬭瘯锛氬垱寤虹洰褰曞拰鏂囦欢銆侀亶鍘嗐€佸垹闄? */
+ * @brief 目录操作测试：创建目录和文件、遍历、删除
+ */
 static void unir_vfs_demo_dir_test(void)
 {
     QOSA_VFS_DIR *dir = QOSA_NULL;
@@ -75,7 +75,7 @@ static void unir_vfs_demo_dir_test(void)
 
     QLOGV("test dir");
 
-    /* 灏濊瘯鎵撳紑鐩綍锛屼笉瀛樺湪鍒欏垱寤?*/
+    /* 尝试打开目录，不存在则创建 */
     dir = qosa_vfs_opendir("./testdir");
     if (dir == QOSA_NULL)
     {
@@ -88,7 +88,7 @@ static void unir_vfs_demo_dir_test(void)
         }
     }
 
-    /* 鍒涘缓娴嬭瘯鏂囦欢鍜屽瓙鐩綍 */
+    /* 创建测试文件和子目录 */
     ret = qosa_vfs_creat("./testdir/vfs_test1.txt", 0);
     if (ret < 0)
     {
@@ -105,10 +105,10 @@ static void unir_vfs_demo_dir_test(void)
         QLOGE("subdir mkdir err=%d", qosa_get_errno());
     }
 
-    /* 閬嶅巻鐩綍鍐呭 */
+    /* 遍历目录内容 */
     unir_vfs_demo_dir_list("./testdir");
 
-    /* 鍏抽棴鐩綍 */
+    /* 关闭目录 */
     dir = qosa_vfs_opendir("./testdir");
     if (dir == QOSA_NULL)
     {
@@ -118,17 +118,18 @@ static void unir_vfs_demo_dir_test(void)
     ret = qosa_vfs_closedir(dir);
     QLOGD("close dir ret=%d", ret);
 
-    /* 灏濊瘯鍒犻櫎闈炵┖鐩綍锛堥鏈熷け璐ワ級 */
+    /* 尝试删除非空目录（预期失败） */
     ret = qosa_vfs_rmdir("./testdir");
     QLOGD("remove dir ret=%d", ret);
 
-    /* 閫掑綊鍒犻櫎鐩綍鍙婃墍鏈夊唴瀹?*/
+    /* 递归删除目录及所有内容 */
     ret = qosa_vfs_rmdir_recursive("./testdir");
     QLOGD("remove dir ret=%d", ret);
 }
 
 /**
- * @brief 鏂囦欢鎿嶄綔娴嬭瘯锛氬垱寤恒€佸啓鍏ャ€佽鍙栥€佺姸鎬佹煡璇€佸垹闄? */
+ * @brief 文件操作测试：创建、写入、读取、状态查询、删除
+ */
 static void unir_vfs_demo_file_test(void)
 {
     int                    fd = 0;
@@ -138,7 +139,7 @@ static void unir_vfs_demo_file_test(void)
 
     QLOGV("test file");
 
-    /* 鎵撳紑鎴栧垱寤烘枃浠讹紝璇诲啓妯″紡 */
+    /* 打开或创建文件，读写模式 */
     fd = qosa_vfs_open("./vfs_test.txt", QOSA_VFS_O_CREAT | QOSA_VFS_O_RDWR);
     if (fd < 0)
     {
@@ -146,27 +147,27 @@ static void unir_vfs_demo_file_test(void)
         return;
     }
 
-    /* 鍐欏叆娴嬭瘯鏁版嵁 */
+    /* 写入测试数据 */
     qosa_snprintf(data, 10, "%s", "1234567890");
     ret = qosa_vfs_write(fd, data, 10);
     QLOGD("write ret=%d", ret);
 
-    /* 鑾峰彇鏂囦欢鐘舵€佷俊鎭?*/
+    /* 获取文件状态信息 */
     ret = qosa_vfs_fstat(fd, &stat);
     if (ret == 0)
     {
         QLOGD("size=%d", stat.st_size);
     }
 
-    /* 灏嗘枃浠舵寚閽堢Щ鍥炶捣濮嬩綅缃?*/
+    /* 将文件指针移回起始位置 */
     qosa_vfs_lseek(fd, 0, QOSA_VFS_SEEK_SET);
 
-    /* 璇诲彇鏂囦欢鏁版嵁 */
+    /* 读取文件数据 */
     qosa_memset(data, 0, sizeof(data));
     ret = qosa_vfs_read(fd, data, 10);
     QLOGD("read ret=%d,data=[%s]", ret, data);
 
-    /* 鍏抽棴骞跺垹闄ゆ祴璇曟枃浠?*/
+    /* 关闭并删除测试文件 */
     qosa_vfs_close(fd);
     qosa_vfs_unlink("./vfs_test.txt");
 }
@@ -192,5 +193,3 @@ void unir_vfs_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "vfs", unir_vfs_demo_init);

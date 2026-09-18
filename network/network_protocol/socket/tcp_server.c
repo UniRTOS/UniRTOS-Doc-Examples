@@ -19,7 +19,6 @@
 #include "qosa_log.h"
 #include "qcm_socket_adp.h"
 #include "qosa_datacall.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                       LOG_TAG
 
@@ -591,7 +590,7 @@ static void qcm_socket_server_main(void *argv)
         QCM_SOCK_STREAM,                // TCP stream socket
         QCM_TCP_PROTOCOL,               // TCP protocol
         SOCKET_SERVER_LISTEN_PORT,      // Bind to port 8080
-        QOSA_FALSE                      // 鈿狅笍 Non-blocking mode
+        QOSA_FALSE                      // ⚠️ Non-blocking mode
     );
 
     if (g_server_ctx.listen_socket < 0)
@@ -739,5 +738,3 @@ void unir_qcm_socket_server_nonblock_demo_init(void)
 
     QLOGD("Server task created successfully");
 }
-
-UNIRTOS_APP_EXPORT(200, "tcp_server", unir_qcm_socket_server_nonblock_demo_init);

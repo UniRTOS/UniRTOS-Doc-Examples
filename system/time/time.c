@@ -2,7 +2,6 @@
 #include "qosa_rtc.h"
 #include "qosa_def.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG LOG_TAG_DEMO
 #define SYSTEM_TIME_DEMO_TASK_STACK_SIZE 4096
@@ -81,5 +80,3 @@ void system_time_demo_init(void)
 		QLOGE("create system time demo task failed");
 	}
 }
-
-UNIRTOS_APP_EXPORT(200, "time", system_time_demo_init);

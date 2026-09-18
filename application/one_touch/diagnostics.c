@@ -1,7 +1,6 @@
 #include "qosa_def.h"
 #include "qosa_log.h"
 #include "easy_network_diagnostics.h"
-#include "unirtos_app_init_registry.h"
 /*===========================================================================
  * Macro Definition
  ===========================================================================*/
@@ -59,6 +58,4 @@ void unir_easy_network_diagnostics_demo_init()
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "diagnostics_demo", unir_easy_network_diagnostics_demo_init);
 

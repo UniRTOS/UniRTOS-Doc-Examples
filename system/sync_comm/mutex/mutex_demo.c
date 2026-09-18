@@ -11,7 +11,6 @@
 #include "qosa_log.h"
 #include "qosa_def.h"
 #include "qosa_sys.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG LOG_TAG
 
@@ -277,5 +276,3 @@ int32_t osMutexTest_init(void)
     QLOGV("\nTest completed\n");
     return QOSA_OK;
 }
-
-UNIRTOS_APP_EXPORT(200, "mutex_demo", osMutexTest_init);

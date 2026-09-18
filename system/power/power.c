@@ -15,7 +15,6 @@
 **********************************************************************/
 #include "qosa_power.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG LOG_TAG_DEMO
 static qosa_task_t          g_unir_pwrkey_demo_task = QOSA_NULL;
@@ -167,5 +166,3 @@ void unir_pwrkey_demo_init(void)
     }
    
 }
-
-UNIRTOS_APP_EXPORT(200, "power", unir_pwrkey_demo_init);

@@ -1,7 +1,6 @@
 #include "qosa_def.h"
 #include "qosa_nvitem.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                           LOG_TAG
 
@@ -112,10 +111,3 @@ int unir_json_nv_demo_init(void)
     QLOGI("========== JSON NV Solution Test Demo Finished ==========\n");
     return 0;
 }
-
-static void __unirtos_export_nv_demo(void)
-{
-    (void)unir_json_nv_demo_init();
-}
-
-UNIRTOS_APP_EXPORT(200, "nv_demo", __unirtos_export_nv_demo);

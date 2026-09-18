@@ -25,7 +25,6 @@
 #include "qurl_api.h"
 #include "qosa_datacall.h"
 #include "qosa_power.h"
-#include "unirtos_app_init_registry.h"
 
 /*===========================================================================
  *  Macro Definition
@@ -704,5 +703,3 @@ void unir_ftp_fota_demo_init(void)
         );
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "ftp_fota_demo", unir_ftp_fota_demo_init);

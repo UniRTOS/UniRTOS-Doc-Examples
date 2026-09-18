@@ -18,7 +18,6 @@
 #include "qosa_secboot.h"
 #include "qosa_def.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
 /*===========================================================================
  *  Macro Definition
@@ -71,5 +70,3 @@ void unir_secboot_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "secboot", unir_secboot_demo_init);

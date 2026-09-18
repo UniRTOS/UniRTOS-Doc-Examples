@@ -5,7 +5,6 @@
 #include "qosa_asyn_dns.h"
 
 #include "qosa_datacall.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                       LOG_TAG
 
@@ -187,5 +186,3 @@ void my_socket_block_demo_init(void)
         return;
     }
 }        
-
-UNIRTOS_APP_EXPORT(200, "tcp_block_client", my_socket_block_demo_init);

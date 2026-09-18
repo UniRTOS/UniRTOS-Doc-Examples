@@ -20,7 +20,6 @@
 #include "qcm_websocket.h"
 #include "qcm_vtls_cfg.h"
 #include "qosa_virtual_file.h"
-#include "unirtos_app_init_registry.h"
 #define QOS_LOG_TAG                    LOG_TAG
 
 #define WEBSOCKET_DEMO_TASK_STACK_SIZ  4096 /*!< Web demo task stack size in bytes */
@@ -612,5 +611,3 @@ void quec_web_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "websocket_demo", quec_web_demo_init);

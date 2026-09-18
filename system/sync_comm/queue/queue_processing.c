@@ -1,8 +1,7 @@
 #include "qosa_sys.h"
 #include "qosa_log.h"
-#include "unirtos_app_init_registry.h"
 
-// 娑堟伅瀹氫箟
+// 消息定义
 typedef struct {
     qosa_uint32_t msg_id;
     qosa_uint32_t timestamp;
@@ -11,10 +10,11 @@ typedef struct {
 } app_message_t;
 
 static qosa_msgq_t g_msg_queue = NULL;
-static const qosa_uint32_t MSG_QUEUE_SIZE = 10;  // 闃熷垪瀹归噺
+static const qosa_uint32_t MSG_QUEUE_SIZE = 10;  // 队列容量
 static const qosa_uint32_t MSG_SIZE = sizeof(app_message_t);
 
-// 鐢熶骇鑰呬换鍔★紙澶氫釜瀹炰緥锛?void producer_task(void *arg)
+// 生产者任务（多个实例）
+void producer_task(void *arg)
 {
     int task_id = *(int*)arg;
     app_message_t msg;
@@ -22,13 +22,14 @@ static const qosa_uint32_t MSG_SIZE = sizeof(app_message_t);
     qosa_uint32_t sequence = 0;
     
     while (1) {
-        // 鏋勯€犳秷鎭?        msg.msg_id = sequence++;
+        // 构造消息
+        msg.msg_id = sequence++;
         msg.timestamp = qosa_get_system_time();
         msg.data = task_id * 1000 + sequence;
         snprintf(msg.description, sizeof(msg.description), 
                 "Msg from Task%d-#%u", task_id, sequence);
         
-        // 鍙戦€佹秷鎭埌闃熷垪锛堥潪闃诲锛岄槦鍒楁弧鍒欎涪寮冿級
+        // 发送消息到队列（非阻塞，队列满则丢弃）
         ret = qosa_msgq_release(g_msg_queue, MSG_SIZE, (qosa_uint8_t*)&msg, 0);
         
         if (ret == QOSA_ERROR_OK) {
@@ -43,10 +44,11 @@ static const qosa_uint32_t MSG_SIZE = sizeof(app_message_t);
             QOSA_LOG_E("Producer%d", "Send failed: %d", task_id, ret);
         }
         
-        qosa_task_sleep(200 + task_id * 50);  // 涓嶅悓鐢熶骇鑰呭彂閫侀棿闅斾笉鍚?    }
+        qosa_task_sleep(200 + task_id * 50);  // 不同生产者发送间隔不同
+    }
 }
 
-// 娑堣垂鑰呬换鍔★紙澶勭悊鎵€鏈夋秷鎭級
+// 消费者任务（处理所有消息）
 void consumer_task(void *arg)
 {
     app_message_t msg;
@@ -54,11 +56,11 @@ void consumer_task(void *arg)
     qosa_uint32_t processed_count = 0;
     
     while (1) {
-        // 绛夊緟娑堟伅锛堝甫1绉掕秴鏃讹級
+        // 等待消息（带1秒超时）
         ret = qosa_msgq_wait(g_msg_queue, (qosa_uint8_t*)&msg, MSG_SIZE, 1000);
         
         if (ret == QOSA_ERROR_OK) {
-            // 澶勭悊娑堟伅
+            // 处理消息
             processed_count++;
             
             qosa_uint32_t queue_cnt;
@@ -68,7 +70,7 @@ void consumer_task(void *arg)
                       processed_count, msg.msg_id, msg.description, 
                       msg.data, queue_cnt);
             
-            // 妯℃嫙娑堟伅澶勭悊鏃堕棿
+            // 模拟消息处理时间
             qosa_task_sleep(300);
             
         } else if (ret == QOSA_ERROR_SEMA_TIMEOUT_ERR) {
@@ -80,7 +82,7 @@ void consumer_task(void *arg)
     }
 }
 
-// 鐩戞帶浠诲姟锛堝畾鏈熸樉绀洪槦鍒楃姸鎬侊級
+// 监控任务（定期显示队列状态）
 void monitor_task(void *arg)
 {
     qosa_uint32_t last_cnt = 0;
@@ -98,14 +100,16 @@ void monitor_task(void *arg)
             }
         }
         
-        qosa_task_sleep(2000);  // 姣?绉掓鏌ヤ竴娆?    }
+        qosa_task_sleep(2000);  // 每2秒检查一次
+    }
 }
 
-// 鍒濆鍖栨秷鎭槦鍒楃郴缁?int message_queue_system_init(void)
+// 初始化消息队列系统
+int message_queue_system_init(void)
 {
     int ret;
     
-    // 1. 鍒涘缓娑堟伅闃熷垪
+    // 1. 创建消息队列
     ret = qosa_msgq_create(&g_msg_queue, MSG_SIZE, MSG_QUEUE_SIZE);
     if (ret != QOSA_ERROR_OK) {
         QOSA_LOG_E("System", "Create message queue failed: %d", ret);
@@ -115,7 +119,8 @@ void monitor_task(void *arg)
     QOSA_LOG_I("System", "Message queue created: size=%u bytes, capacity=%u",
               MSG_SIZE, MSG_QUEUE_SIZE);
     
-    // 2. 鍒涘缓3涓敓浜ц€呬换鍔?    int producer_ids[] = {1, 2, 3};
+    // 2. 创建3个生产者任务
+    int producer_ids[] = {1, 2, 3};
     for (int i = 0; i < 3; i++) {
         char task_name[20];
         snprintf(task_name, sizeof(task_name), "Producer%d", producer_ids[i]);
@@ -129,14 +134,15 @@ void monitor_task(void *arg)
         }
     }
     
-    // 3. 鍒涘缓娑堣垂鑰呬换鍔?    ret = qosa_task_create("Consumer", consumer_task, NULL,
+    // 3. 创建消费者任务
+    ret = qosa_task_create("Consumer", consumer_task, NULL,
                           4096, QOSA_TASK_PRIORITY_NORMAL);
     if (ret != QOSA_ERROR_OK) {
         QOSA_LOG_E("System", "Create consumer task failed");
         goto cleanup;
     }
     
-    // 4. 鍒涘缓鐩戞帶浠诲姟
+    // 4. 创建监控任务
     ret = qosa_task_create("Monitor", monitor_task, NULL,
                           2048, QOSA_TASK_PRIORITY_LOW);
     if (ret != QOSA_ERROR_OK) {
@@ -153,10 +159,3 @@ cleanup:
     }
     return ret;
 }
-
-static void __unirtos_export_queue_processing(void)
-{
-    (void)message_queue_system_init();
-}
-
-UNIRTOS_APP_EXPORT(200, "queue_processing", __unirtos_export_queue_processing);

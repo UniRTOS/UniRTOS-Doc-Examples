@@ -17,7 +17,6 @@
 #include "qosa_sms.h"
 #include "qosa_sim.h"
 #include "easy_sms.h"
-#include "unirtos_app_init_registry.h"
 
 
 /*===========================================================================
@@ -332,5 +331,3 @@ void unir_easy_sms_demo_init(void)
     }
     return;
 }
-
-UNIRTOS_APP_EXPORT(200, "easy_sms_demo", unir_easy_sms_demo_init);

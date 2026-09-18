@@ -8,7 +8,6 @@
 #include "qosa_at_config.h"
 #include "qosa_center_task.h"
 #include "qosa_event_notify.h"
-#include "unirtos_app_init_registry.h"
 
 
 #define QOS_LOG_TAG         LOG_TAG_DEMO
@@ -2283,5 +2282,3 @@ void quec_sms_demo_init(void)
 
     return ;
 }
-
-UNIRTOS_APP_EXPORT(200, "sms_demo", quec_sms_demo_init);

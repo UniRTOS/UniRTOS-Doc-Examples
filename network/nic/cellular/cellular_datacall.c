@@ -6,7 +6,6 @@
 #include "qosa_platform_cfg.h"
 #include "qosa_ip_addr.h"
 #include "qosa_event_notify.h"
-#include "unirtos_app_init_registry.h"
 
 #define log_e(...)                                QOSA_LOG_E(LOG_TAG_MODEM, ##__VA_ARGS__)
 #define log_w(...)                                QOSA_LOG_W(LOG_TAG_MODEM, ##__VA_ARGS__)
@@ -250,5 +249,3 @@ void datacall_demo_init(void)
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "cellular_datacall", datacall_demo_init);

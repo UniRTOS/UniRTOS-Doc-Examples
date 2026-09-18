@@ -3,7 +3,6 @@
 #include "qosa_network.h"
 #include "qosa_datacall.h"
 #include "easy_datacall.h"
-#include "unirtos_app_init_registry.h"
 /*===========================================================================
  * Macro Definition
  ===========================================================================*/
@@ -80,5 +79,3 @@ void unir_easy_datacall_demo_init()
         return;
     }
 }
-
-UNIRTOS_APP_EXPORT(200, "datacall_demo", unir_easy_datacall_demo_init);

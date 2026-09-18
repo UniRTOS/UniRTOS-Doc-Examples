@@ -1,5 +1,4 @@
 #include "qosa_def.h"
-#include "unirtos_app_init_registry.h"
 
 #define NETWORK_SELECTION_DEMO_SIM_ID 0
 
@@ -17,5 +16,3 @@ static void network_selection_demo_init(void)
     qapp_easy_nw_init_acc_tpl_set_config(&tpl, QAPP_EASY_NW_INIT_ACC_TPL_USER_0);
     qapp_easy_nw_init_acc_tpl_write(sim_id, QAPP_EASY_NW_INIT_ACC_TPL_USER_0);
 }
-
-UNIRTOS_APP_EXPORT(200, "network_selection_demo", network_selection_demo_init);

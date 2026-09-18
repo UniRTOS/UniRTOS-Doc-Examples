@@ -19,7 +19,6 @@
 #include "qosa_usbnet.h"
 #include "qosa_datacall.h"
 #include "qosa_power.h"
-#include "unirtos_app_init_registry.h"
 
 #define QOS_LOG_TAG                       LOG_TAG_DEMO
 
@@ -216,5 +215,3 @@ void unir_usbnet_demo_init(void)
 
     return;
 }
-
-UNIRTOS_APP_EXPORT(200, "usbnet_demo", unir_usbnet_demo_init);
